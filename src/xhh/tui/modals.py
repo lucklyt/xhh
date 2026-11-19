@@ -563,6 +563,7 @@ class NewPostModal(ModalScreen[dict[str, Any] | None]):
             yield Static("📝 发布新帖 (Ctrl+S 提交 / Esc 取消)", id="newpost-title")
             yield Input(value=self.default_topic, placeholder="目标板块名或 topic_id（默认: 盒友杂谈）", id="post-topic-input")
             yield Input(placeholder="输入帖子标题...", id="post-title-input")
+            yield Input(placeholder="可选：附加图片本地路径或 URL，多张用英文逗号分隔...", id="post-images-input")
             yield TextArea(placeholder="输入帖子正文内容...", id="post-content-area")
             yield Static("提示: 发帖需先扫码登录 (按 l)", id="newpost-status")
             with Horizontal(id="newpost-actions"):
@@ -583,6 +584,7 @@ class NewPostModal(ModalScreen[dict[str, Any] | None]):
             return
         topic_raw = self.query_one("#post-topic-input", Input).value.strip() or "盒友杂谈"
         title = self.query_one("#post-title-input", Input).value.strip()
+        images_raw = self.query_one("#post-images-input", Input).value.strip()
         content = self.query_one("#post-content-area", TextArea).text.strip()
         status = self.query_one("#newpost-status", Static)
 
@@ -595,12 +597,13 @@ class NewPostModal(ModalScreen[dict[str, Any] | None]):
             self.query_one("#post-content-area", TextArea).focus()
             return
 
+        imgs = [p.strip() for p in images_raw.split(",") if p.strip()] if images_raw else None
         self._submitting = True
-        status.update("⏳ 正在解析板块并发布...")
+        status.update("⏳ 正在解析板块并上传图片/发布..." if imgs else "⏳ 正在解析板块并发布...")
         try:
             topic = await self.client.resolve_topic(topic_raw)
             topic_id = topic.topic_id if topic is not None else (topic_raw if topic_raw.isdigit() else "7214")
-            res = await self.client.create_post(title=title, content=content, topic_id=topic_id)
+            res = await self.client.create_post(title=title, content=content, topic_id=topic_id, imgs=imgs)
         except Exception as exc:
             self._submitting = False
             status.update(f"❌ {exc}")

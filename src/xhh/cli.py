@@ -445,18 +445,27 @@ async def _cmd_publish(
     title: str,
     content: str,
     topic: str = "盒友杂谈",
+    images: Sequence[str] | None = None,
     as_json: bool = False,
 ) -> int:
     async with HeyboxClient() as client:
         resolved = await client.resolve_topic(topic)
         topic_id = resolved.topic_id if resolved is not None else (topic if topic.isdigit() else "7214")
         topic_name = resolved.name if resolved is not None else topic
-        res = await client.create_post(title=title, content=content, topic_id=topic_id)
+        res = await client.create_post(
+            title=title,
+            content=content,
+            topic_id=topic_id,
+            imgs=list(images) if images else None,
+        )
+        lid = str(res.get("link_id") or "")
+        share_url = f"https://www.xiaoheihe.cn/app/bbs/link/{lid}" if lid else ""
         if as_json:
             _print_json(
                 {
                     "status": res["status"],
-                    "link_id": res.get("link_id") or "",
+                    "link_id": lid,
+                    "share_url": share_url,
                     "topic_id": str(topic_id),
                     "topic_name": topic_name,
                     "msg": res.get("msg") or "发布成功",
@@ -464,8 +473,7 @@ async def _cmd_publish(
                 }
             )
             return 0
-        lid = res.get("link_id")
-        lid_tip = f" (link_id: {lid})" if lid else ""
+        lid_tip = f" (link_id: {lid}, 链接: {share_url})" if lid else ""
         console.print(f"[bold green]✅ {res.get('msg', '发布成功')}[/bold green] 板块: {topic_name}{lid_tip}")
         return 0
 
@@ -561,6 +569,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_publish.add_argument("-t", "--title", required=True, help="帖子标题")
     p_publish.add_argument("-c", "--content", required=True, help="帖子正文内容")
     p_publish.add_argument("--topic", default="盒友杂谈", help="目标板块名称或 topic_id (默认: 盒友杂谈)")
+    p_publish.add_argument(
+        "-i",
+        "--image",
+        action="append",
+        dest="images",
+        default=[],
+        help="附加本地图片路径或图片 URL（可多次指定）",
+    )
     p_publish.add_argument("-j", "--json", dest="as_json", action="store_true", help="以 JSON 结构输出")
 
     return parser
@@ -651,6 +667,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     title=args.title,
                     content=args.content,
                     topic=args.topic,
+                    images=args.images,
                     as_json=want_json,
                 )
             )

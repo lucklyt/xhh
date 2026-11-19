@@ -364,7 +364,7 @@ QRLoginModal, SearchModal, SubCommentModal, ImagePreviewModal, CommentModal, New
     margin-bottom: 1;
 }
 
-#post-topic-input, #post-title-input {
+#post-topic-input, #post-title-input, #post-images-input {
     margin-bottom: 1;
 }
 

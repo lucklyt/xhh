@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import io
 import json
+import time
 import urllib.parse
-from typing import Any
+from pathlib import Path
+from typing import Any, Sequence
 
 import httpx
+from PIL import Image
 
 from xhh.config import AppConfig, SessionData
 from xhh.hkey import generate_hkey_params
@@ -29,6 +35,51 @@ DEFAULT_HEADERS = {
     "Origin": "https://www.xiaoheihe.cn",
     "Accept": "application/json, text/plain, */*",
 }
+
+_IMAGE_MIME_MAP: dict[str, tuple[str, str]] = {
+    "PNG": ("image/png", ".png"),
+    "JPEG": ("image/jpeg", ".jpg"),
+    "JPG": ("image/jpeg", ".jpg"),
+    "WEBP": ("image/webp", ".webp"),
+    "GIF": ("image/gif", ".gif"),
+}
+
+
+def _build_cos_v5_authorization(
+    *,
+    secret_id: str,
+    secret_key: str,
+    method: str,
+    pathname: str,
+    host: str,
+    start_time: int,
+    expired_time: int,
+) -> str:
+    """生成腾讯云 COS V5 请求签名."""
+    key_time = f"{start_time};{expired_time}"
+    sign_key = hmac.new(
+        secret_key.encode("utf-8"), key_time.encode("utf-8"), hashlib.sha1
+    ).hexdigest()
+    norm_path = pathname if pathname.startswith("/") else f"/{pathname}"
+    http_string = (
+        f"{method.lower()}\n{norm_path}\n\nhost={urllib.parse.quote(host, safe='-_.~')}\n"
+    )
+    http_sha1 = hashlib.sha1(http_string.encode("utf-8")).hexdigest()
+    string_to_sign = f"sha1\n{key_time}\n{http_sha1}\n"
+    signature = hmac.new(
+        sign_key.encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha1
+    ).hexdigest()
+    return "&".join(
+        [
+            "q-sign-algorithm=sha1",
+            f"q-ak={secret_id}",
+            f"q-sign-time={key_time}",
+            f"q-key-time={key_time}",
+            "q-header-list=host",
+            "q-url-param-list=",
+            f"q-signature={signature}",
+        ]
+    )
 
 
 class HeyboxAPIError(RuntimeError):
@@ -724,14 +775,158 @@ class HeyboxClient:
             "result": payload.get("result") or {},
         }
 
+    async def upload_image(self, image_source: str | Path) -> dict[str, Any]:
+        """上传本地图片（或外链图片）至小黑盒图床 (腾讯云 COS 四步流程)."""
+        if not self.session.is_logged_in:
+            raise HeyboxAPIError(
+                "请先扫码登录（运行 `xhh login` 或在 TUI 按 `l`）后再上传图片",
+                status="login",
+            )
+
+        src_str = str(image_source).strip()
+        if src_str.startswith(("http://", "https://")):
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as dl_client:
+                resp = await dl_client.get(src_str)
+                resp.raise_for_status()
+                raw_bytes = resp.content
+            parsed_path = urllib.parse.urlparse(src_str).path
+            filename = Path(parsed_path).name or "image.png"
+        else:
+            file_path = Path(src_str).expanduser()
+            if not file_path.is_file():
+                raise FileNotFoundError(f"图片文件不存在: {file_path}")
+            raw_bytes = file_path.read_bytes()
+            filename = file_path.name
+
+        with Image.open(io.BytesIO(raw_bytes)) as im:
+            width, height = im.size
+            fmt = (im.format or "").upper()
+        mimetype, default_ext = _IMAGE_MIME_MAP.get(fmt, ("image/png", ".png"))
+        if "." not in filename:
+            filename = f"{filename}{default_ext}"
+
+        file_info = {
+            "name": filename,
+            "mimetype": mimetype,
+            "fsize": len(raw_bytes),
+            "width": int(width),
+            "height": int(height),
+        }
+
+        # Step 1: 获取 COS key / bucket / region
+        info_payload = await self._post(
+            "/bbs/app/api/qcloud/cos/upload/info/v2",
+            data={
+                "file_infos": json.dumps([file_info], ensure_ascii=False),
+                "scope": "bbs",
+                "need_cache": "0",
+            },
+        )
+        if str(info_payload.get("status") or "") != "ok":
+            raise HeyboxAPIError(
+                info_payload.get("msg") or "获取 CDN 上传信息失败",
+                status=str(info_payload.get("status") or "error"),
+                raw=info_payload,
+            )
+        info_res = info_payload.get("result") or {}
+        keys = info_res.get("keys") or []
+        if not keys or not info_res.get("bucket"):
+            raise HeyboxAPIError("上传信息缺少 bucket 或 key", raw=info_payload)
+        key = str(keys[0])
+        bucket = str(info_res["bucket"])
+        region = str(info_res.get("region") or "ap-shanghai")
+
+        # Step 2: 获取临时 STS 密钥
+        token_payload = await self._post(
+            "/bbs/app/api/qcloud/cos/upload/token/v2",
+            data={
+                "bucket": bucket,
+                "keys": json.dumps([key]),
+                "mimetypes": json.dumps([mimetype]),
+                "is_multipart_upload": "0",
+            },
+        )
+        if str(token_payload.get("status") or "") != "ok":
+            raise HeyboxAPIError(
+                token_payload.get("msg") or "获取 CDN 上传凭证失败",
+                status=str(token_payload.get("status") or "error"),
+                raw=token_payload,
+            )
+        token_res = token_payload.get("result") or {}
+        creds = token_res.get("credentials") or {}
+        tmp_secret_id = str(creds.get("tmpSecretId") or "")
+        tmp_secret_key = str(creds.get("tmpSecretKey") or "")
+        session_token = str(creds.get("sessionToken") or "")
+        if not tmp_secret_id or not tmp_secret_key or not session_token:
+            raise HeyboxAPIError("上传凭证缺少临时密钥", raw=token_payload)
+
+        now_ts = int(time.time())
+        start_time = int(token_res.get("startTime") or now_ts - 1)
+        expired_time = int(token_res.get("expiredTime") or start_time + 900)
+
+        # Step 3: COS PUT 直传图片二进制
+        host = f"{bucket}.cos.{region}.myqcloud.com"
+        object_path = key.lstrip("/")
+        cos_url = f"https://{host}/{object_path}"
+        auth_header = _build_cos_v5_authorization(
+            secret_id=tmp_secret_id,
+            secret_key=tmp_secret_key,
+            method="PUT",
+            pathname=f"/{object_path}",
+            host=host,
+            start_time=start_time,
+            expired_time=expired_time,
+        )
+        async with httpx.AsyncClient(timeout=30.0) as cos_client:
+            put_resp = await cos_client.put(
+                cos_url,
+                content=raw_bytes,
+                headers={
+                    "Host": host,
+                    "Content-Type": mimetype,
+                    "Authorization": auth_header,
+                    "x-cos-security-token": session_token,
+                },
+            )
+            if put_resp.status_code not in (200, 204):
+                raise HeyboxAPIError(
+                    f"COS 图片上传失败 (HTTP {put_resp.status_code}): {put_resp.text[:200]}",
+                    status="cos_error",
+                )
+
+        # Step 4: 通知小黑盒确认上传并取回 CDN 链接
+        cb_payload = await self._post(
+            "/bbs/app/api/qcloud/cos/upload/callback/v2",
+            params={"is_finished": "true"},
+            data={"keys": json.dumps([key])},
+        )
+        if str(cb_payload.get("status") or "") != "ok":
+            raise HeyboxAPIError(
+                cb_payload.get("msg") or "确认 CDN 上传结果失败",
+                status=str(cb_payload.get("status") or "error"),
+                raw=cb_payload,
+            )
+        cb_res = cb_payload.get("result") or {}
+        preview_urls = cb_res.get("preview_urls") or []
+        thumbs = cb_res.get("thumbs") or []
+        final_url = str(preview_urls[0] if preview_urls else cos_url)
+        final_thumb = str(thumbs[0] if thumbs else final_url)
+        return {
+            "url": final_url,
+            "thumb": final_thumb,
+            "width": int(width),
+            "height": int(height),
+            "key": key,
+        }
+
     async def create_post(
         self,
         title: str,
         content: str,
         topic_id: int | str = "7214",
-        imgs: list[str] | None = None,
+        imgs: Sequence[str | Path | dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """发布图文新帖到指定板块（需登录态）."""
+        """发布图文新帖到指定板块（需登录态，支持本地图片自动上传或已有图片 URL）."""
         if not self.session.is_logged_in:
             raise HeyboxAPIError(
                 "请先扫码登录（运行 `xhh login` 或在 TUI 按 `l`）后再发帖",
@@ -745,10 +940,34 @@ class HeyboxClient:
             raise ValueError("帖子正文不能为空")
 
         blocks: list[dict[str, Any]] = [{"type": "text", "text": clean_content}]
-        for img_url in imgs or []:
-            u = str(img_url).strip()
-            if u:
-                blocks.append({"type": "img", "url": u})
+        for item in imgs or []:
+            if isinstance(item, dict):
+                url = str(item.get("url") or "").strip()
+                if not url:
+                    continue
+                img_block: dict[str, Any] = {"type": "img", "url": url}
+                if item.get("width") is not None:
+                    img_block["width"] = str(item["width"])
+                if item.get("height") is not None:
+                    img_block["height"] = str(item["height"])
+                blocks.append(img_block)
+                continue
+
+            item_str = str(item).strip()
+            if not item_str:
+                continue
+            if item_str.startswith(("http://", "https://")):
+                blocks.append({"type": "img", "url": item_str})
+            else:
+                uploaded = await self.upload_image(item_str)
+                blocks.append(
+                    {
+                        "type": "img",
+                        "url": uploaded["url"],
+                        "width": str(uploaded["width"]),
+                        "height": str(uploaded["height"]),
+                    }
+                )
 
         tid = str(topic_id or "7214").strip()
         link_tag = "28" if tid == "58144" else "27"

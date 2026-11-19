@@ -2,6 +2,11 @@
 
 在终端中沉浸式浏览小黑盒社区的交互式 **TUI** 应用（同时提供快捷 **CLI** 子命令与 JSON 输出）：支持 App 扫码登录、推荐流、热议/热搜/热门游戏榜、指定游戏板块筛选（综合/热点/排序）、帖子正文与楼中楼评论分离阅读、终端悬停看图、发评论与发帖。
 
+<p align="center">
+  <img src="assets/tui_feed.png" alt="小黑盒 TUI 推荐流与板块导航" width="49%" />
+  <img src="assets/tui_detail.png" alt="帖子正文与终端 TrueColor 图片预览浮层" width="49%" />
+</p>
+
 ## 一键安装 (推荐)
 
 ### 方式 1：安装脚本一键安装（macOS / Linux）
@@ -82,10 +87,11 @@ xhh post <link_id> --owner --page 1
 xhh search 黑神话
 xhh feed -n 10 --json
 
-# 发表评论与发布新帖（需先扫码登录 `xhh login`）
+# 发表评论与发布图文新帖（需先扫码登录 `xhh login`）
 xhh comment <link_id> "说得太对了[cube_滑稽]"
 xhh comment <link_id> "确实" --root-id <主评ID> --reply-id <目标评论ID>
 xhh publish -t "测试标题" -c "帖子正文内容" --topic 盒友杂谈
+xhh publish -t "图文推广标题" -c "正文内容" -i assets/tui_feed.png -i assets/tui_detail.png --topic 盒友杂谈
 ```
 
 ## TUI 全屏交互快捷键

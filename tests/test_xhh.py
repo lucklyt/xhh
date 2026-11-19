@@ -101,7 +101,12 @@ def test_image_rendering() -> None:
     assert any("#ff641e" in str(span.style) for span in rendered.spans)
 
 
-def test_client_create_comment_and_post(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_client_create_comment_and_post(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sample_png = tmp_path / "shot.png"
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 32), (10, 20, 30)).save(buf, format="PNG")
+    sample_png.write_bytes(buf.getvalue())
+
     async def _run() -> None:
         # 1. 未登录时应当拦截
         anon = HeyboxClient(session=SessionData())
@@ -112,18 +117,66 @@ def test_client_create_comment_and_post(monkeypatch: pytest.MonkeyPatch) -> None
             with pytest.raises(HeyboxAPIError) as exc2:
                 await anon.create_post("标题", "正文")
             assert exc2.value.status == "login"
+            with pytest.raises(HeyboxAPIError) as exc3:
+                await anon.upload_image(sample_png)
+            assert exc3.value.status == "login"
 
-        # 2. 已登录时校验表单与返回解析
+        # 2. 已登录时校验表单、四步 COS 图床上传与返回解析
         authed = HeyboxClient(session=SessionData(heybox_id="1001", pkey="pk_test", nickname="tester"))
-        captured: list[tuple[str, dict[str, Any]]] = []
+        captured: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = []
+        cos_puts: list[tuple[str, dict[str, str], bytes]] = []
 
-        async def _fake_post(path: str, data: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
-            captured.append((path, data))
+        async def _fake_post(
+            path: str, data: dict[str, Any], params: dict[str, Any] | None = None
+        ) -> dict[str, Any]:
+            captured.append((path, data, params))
             if path == "/bbs/app/comment/create":
                 return {"status": "ok", "msg": "评论成功", "result": {"comment": [{"commentid": 777}]}}
+            if path == "/bbs/app/api/qcloud/cos/upload/info/v2":
+                return {
+                    "status": "ok",
+                    "result": {
+                        "bucket": "heybox-test-125000",
+                        "region": "ap-shanghai",
+                        "keys": ["forum/2026/11/shot.png"],
+                    },
+                }
+            if path == "/bbs/app/api/qcloud/cos/upload/token/v2":
+                return {
+                    "status": "ok",
+                    "result": {
+                        "credentials": {
+                            "tmpSecretId": "AKID_TEST",
+                            "tmpSecretKey": "SECRET_KEY_TEST",
+                            "sessionToken": "STS_TOKEN_TEST",
+                        },
+                        "startTime": 1794800000,
+                        "expiredTime": 1794800900,
+                    },
+                }
+            if path == "/bbs/app/api/qcloud/cos/upload/callback/v2":
+                return {
+                    "status": "ok",
+                    "result": {
+                        "preview_urls": ["https://imgheybox.max-c.com/forum/2026/11/shot.png"],
+                        "thumbs": ["https://imgheybox.max-c.com/forum/2026/11/shot_thumb.png"],
+                    },
+                }
             return {"status": "ok", "msg": "发布成功", "link_id": "999888", "result": {"link_id": "999888"}}
 
+        async def _fake_cos_put(
+            self: Any, url: str, content: bytes = b"", headers: dict[str, str] | None = None, **_: Any
+        ) -> Any:
+            import httpx
+
+            cos_puts.append((url, dict(headers or {}), content))
+            return httpx.Response(200, request=httpx.Request("PUT", url))
+
         monkeypatch.setattr(authed, "_post", _fake_post)
+        import httpx
+
+        monkeypatch.setattr(httpx.AsyncClient, "put", _fake_cos_put)
+
         async with authed:
             c_res = await authed.create_comment("12345", "测试评论", root_id="88", reply_id="99")
             assert c_res["status"] == "ok"
@@ -132,12 +185,27 @@ def test_client_create_comment_and_post(monkeypatch: pytest.MonkeyPatch) -> None
             assert captured[0][1]["root_id"] == "88"
             assert captured[0][1]["reply_id"] == "99"
 
-            p_res = await authed.create_post("测试标题", "测试正文内容", topic_id="43")
+            p_res = await authed.create_post("测试标题", "测试正文内容", topic_id="43", imgs=[sample_png])
             assert p_res["status"] == "ok"
             assert p_res["link_id"] == "999888"
-            assert captured[1][0] == "/bbs/app/api/link/post"
-            assert captured[1][1]["topic_ids"] == "43"
-            assert json.loads(captured[1][1]["text"]) == [{"type": "text", "text": "测试正文内容"}]
+            assert len(cos_puts) == 1
+            assert cos_puts[0][0] == "https://heybox-test-125000.cos.ap-shanghai.myqcloud.com/forum/2026/11/shot.png"
+            assert cos_puts[0][1]["x-cos-security-token"] == "STS_TOKEN_TEST"
+            assert "q-sign-algorithm=sha1" in cos_puts[0][1]["Authorization"]
+            cb_entry = [c for c in captured if c[0].endswith("callback/v2")][0]
+            assert cb_entry[2] == {"is_finished": "true"}
+
+            post_entry = [c for c in captured if c[0] == "/bbs/app/api/link/post"][0]
+            assert post_entry[1]["topic_ids"] == "43"
+            assert json.loads(post_entry[1]["text"]) == [
+                {"type": "text", "text": "测试正文内容"},
+                {
+                    "type": "img",
+                    "url": "https://imgheybox.max-c.com/forum/2026/11/shot.png",
+                    "width": "64",
+                    "height": "32",
+                },
+            ]
 
     asyncio.run(_run())
 
@@ -329,12 +397,15 @@ def test_cli_comment_and_publish_json(
     c_data = json.loads(capsys.readouterr().out)
     assert c_data["status"] == "ok"
 
-    rc2 = cli_main(["publish", "-t", "Cli发帖标题", "-c", "Cli发帖正文", "--topic", "CS2", "--json"])
+    rc2 = cli_main(
+        ["publish", "-t", "Cli发帖标题", "-c", "Cli发帖正文", "--topic", "CS2", "-i", "a.png", "-i", "b.png", "--json"]
+    )
     assert rc2 == 0
     p_data = json.loads(capsys.readouterr().out)
     assert p_data["status"] == "ok"
     assert p_data["topic_id"] == "43"
     assert p_data["link_id"] == "30001"
+    assert p_data["result"]["imgs_count"] == 2
 
 
 class _FakeClient:
@@ -573,7 +644,12 @@ class _FakeClient:
     async def create_post(
         self, title: str, content: str, topic_id: Any = "7214", imgs: Any = None
     ) -> dict[str, Any]:
-        return {"status": "ok", "link_id": "30001", "msg": "发布成功", "result": {"link_id": "30001"}}
+        return {
+            "status": "ok",
+            "link_id": "30001",
+            "msg": "发布成功",
+            "result": {"link_id": "30001", "imgs_count": len(imgs or [])},
+        }
 
 
 def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
