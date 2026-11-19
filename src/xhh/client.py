@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import urllib.parse
 from typing import Any
 
@@ -88,6 +89,15 @@ class HeyboxClient:
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         payload, _ = await self._request("GET", path, params=params)
+        return payload
+
+    async def _post(
+        self,
+        path: str,
+        data: dict[str, Any],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload, _ = await self._request("POST", path, params=params, data=data)
         return payload
 
     def _update_session_from_login_result(
@@ -669,4 +679,110 @@ class HeyboxClient:
             "suggestions": suggestions,
             "posts": posts,
             "requires_login": requires_login,
+        }
+
+    # -------------------- 发表评论与发帖 --------------------
+
+    async def create_comment(
+        self,
+        link_id: int | str,
+        text: str,
+        root_id: int | str = "-1",
+        reply_id: int | str = "-1",
+    ) -> dict[str, Any]:
+        """对指定帖子发表评论或回复楼中楼（需登录态）."""
+        if not self.session.is_logged_in:
+            raise HeyboxAPIError(
+                "请先扫码登录（运行 `xhh login` 或在 TUI 按 `l`）后再发表评论",
+                status="login",
+            )
+        content = text.strip()
+        if not content:
+            raise ValueError("评论内容不能为空")
+
+        payload = await self._post(
+            "/bbs/app/comment/create",
+            data={
+                "link_id": str(link_id),
+                "text": content,
+                "root_id": str(root_id),
+                "reply_id": str(reply_id),
+                "is_cy": "0",
+            },
+        )
+        st = str(payload.get("status") or "")
+        if st in ("login", "relogin"):
+            raise HeyboxAPIError("登录态已失效，请重新扫码登录", status=st, raw=payload)
+        if st == "show_captcha":
+            raise HeyboxAPIError("触发安全校验 (show_captcha)，请稍后再试", status=st, raw=payload)
+        if st != "ok":
+            raise HeyboxAPIError(payload.get("msg") or "发表评论失败", status=st, raw=payload)
+
+        return {
+            "status": "ok",
+            "msg": payload.get("msg") or "评论成功",
+            "result": payload.get("result") or {},
+        }
+
+    async def create_post(
+        self,
+        title: str,
+        content: str,
+        topic_id: int | str = "7214",
+        imgs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """发布图文新帖到指定板块（需登录态）."""
+        if not self.session.is_logged_in:
+            raise HeyboxAPIError(
+                "请先扫码登录（运行 `xhh login` 或在 TUI 按 `l`）后再发帖",
+                status="login",
+            )
+        clean_title = title.strip()
+        clean_content = content.strip()
+        if not clean_title:
+            raise ValueError("帖子标题不能为空")
+        if not clean_content:
+            raise ValueError("帖子正文不能为空")
+
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": clean_content}]
+        for img_url in imgs or []:
+            u = str(img_url).strip()
+            if u:
+                blocks.append({"type": "img", "url": u})
+
+        tid = str(topic_id or "7214").strip()
+        link_tag = "28" if tid == "58144" else "27"
+        words_count = str(max(1, (len(clean_title) + len(clean_content)) // 2))
+
+        payload = await self._post(
+            "/bbs/app/api/link/post",
+            data={
+                "title": clean_title,
+                "text": json.dumps(blocks, ensure_ascii=False),
+                "desc": clean_content[:100],
+                "words_count": words_count,
+                "topic_ids": tid,
+                "link_tag": link_tag,
+                "view_limit": "1",
+                "post_type": "1",
+                "original": "1",
+                "declaration": "0",
+                "hashtags": "[]",
+            },
+        )
+        st = str(payload.get("status") or "")
+        if st in ("login", "relogin"):
+            raise HeyboxAPIError("登录态已失效，请重新扫码登录", status=st, raw=payload)
+        if st == "show_captcha":
+            raise HeyboxAPIError("触发安全校验 (show_captcha)，请稍后再试", status=st, raw=payload)
+        if st != "ok":
+            raise HeyboxAPIError(payload.get("msg") or "发布帖子失败", status=st, raw=payload)
+
+        res = payload.get("result") or {}
+        link_id = payload.get("link_id") or (res.get("link_id") if isinstance(res, dict) else "") or ""
+        return {
+            "status": "ok",
+            "link_id": str(link_id),
+            "msg": payload.get("msg") or "发布成功",
+            "result": res,
         }

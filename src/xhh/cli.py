@@ -420,6 +420,56 @@ async def _cmd_search(query: str, limit: int, as_json: bool = False) -> int:
         return 0
 
 
+async def _cmd_comment(
+    link_id: str,
+    text: str,
+    root_id: str = "-1",
+    reply_id: str = "-1",
+    as_json: bool = False,
+) -> int:
+    async with HeyboxClient() as client:
+        res = await client.create_comment(
+            link_id=link_id,
+            text=text,
+            root_id=root_id,
+            reply_id=reply_id,
+        )
+        if as_json:
+            _print_json(res)
+            return 0
+        console.print(f"[bold green]✅ {res.get('msg', '评论成功')}[/bold green] (link_id: {link_id})")
+        return 0
+
+
+async def _cmd_publish(
+    title: str,
+    content: str,
+    topic: str = "盒友杂谈",
+    as_json: bool = False,
+) -> int:
+    async with HeyboxClient() as client:
+        resolved = await client.resolve_topic(topic)
+        topic_id = resolved.topic_id if resolved is not None else (topic if topic.isdigit() else "7214")
+        topic_name = resolved.name if resolved is not None else topic
+        res = await client.create_post(title=title, content=content, topic_id=topic_id)
+        if as_json:
+            _print_json(
+                {
+                    "status": res["status"],
+                    "link_id": res.get("link_id") or "",
+                    "topic_id": str(topic_id),
+                    "topic_name": topic_name,
+                    "msg": res.get("msg") or "发布成功",
+                    "result": res.get("result") or {},
+                }
+            )
+            return 0
+        lid = res.get("link_id")
+        lid_tip = f" (link_id: {lid})" if lid else ""
+        console.print(f"[bold green]✅ {res.get('msg', '发布成功')}[/bold green] 板块: {topic_name}{lid_tip}")
+        return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="xhh",
@@ -500,6 +550,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("-n", "--limit", type=int, default=10, help="展示数量 (默认 10)")
     p_search.add_argument("-j", "--json", dest="as_json", action="store_true", help="以 JSON 结构输出")
 
+    p_comment = sub.add_parser("comment", help="对指定帖子发表评论或回复楼中楼")
+    p_comment.add_argument("link_id", help="目标帖子 link_id")
+    p_comment.add_argument("text", help="评论内容")
+    p_comment.add_argument("--root-id", default="-1", help="主楼评论 ID (回复楼中楼时传入，默认 -1)")
+    p_comment.add_argument("--reply-id", default="-1", help="被回复的目标评论 ID (默认 -1)")
+    p_comment.add_argument("-j", "--json", dest="as_json", action="store_true", help="以 JSON 结构输出")
+
+    p_publish = sub.add_parser("publish", aliases=["new-post"], help="发布图文新帖到指定板块")
+    p_publish.add_argument("-t", "--title", required=True, help="帖子标题")
+    p_publish.add_argument("-c", "--content", required=True, help="帖子正文内容")
+    p_publish.add_argument("--topic", default="盒友杂谈", help="目标板块名称或 topic_id (默认: 盒友杂谈)")
+    p_publish.add_argument("-j", "--json", dest="as_json", action="store_true", help="以 JSON 结构输出")
+
     return parser
 
 
@@ -572,6 +635,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.command == "search":
             return asyncio.run(_cmd_search(query=args.query, limit=args.limit, as_json=want_json))
+        if args.command == "comment":
+            return asyncio.run(
+                _cmd_comment(
+                    link_id=args.link_id,
+                    text=args.text,
+                    root_id=args.root_id,
+                    reply_id=args.reply_id,
+                    as_json=want_json,
+                )
+            )
+        if args.command in ("publish", "new-post"):
+            return asyncio.run(
+                _cmd_publish(
+                    title=args.title,
+                    content=args.content,
+                    topic=args.topic,
+                    as_json=want_json,
+                )
+            )
     except (HeyboxAPIError, ValueError) as exc:
         if want_json:
             _print_json({"error": str(exc)})

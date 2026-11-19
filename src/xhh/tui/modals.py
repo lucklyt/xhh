@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import webbrowser
+from pathlib import Path
 from typing import Any
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from xhh.client import HeyboxClient
 from xhh.config import SessionData
+from xhh.image import fetch_image_to_cache, open_image_quicklook, render_image_file_rich
 from xhh.models import CommentReply, CommentThread, format_count, format_time
 from xhh.qr import render_qr_rich, save_qr_html
 
@@ -266,6 +269,7 @@ class SubCommentModal(ModalScreen[None]):
         Binding("q", "close_modal", "关闭"),
         Binding("j", "cursor_down", "下移", show=False),
         Binding("k", "cursor_up", "上移", show=False),
+        Binding("w", "reply_root", "回复该楼"),
         Binding("n", "load_more", "加载更多"),
     ]
 
@@ -343,7 +347,7 @@ class SubCommentModal(ModalScreen[None]):
         lst.set_options(options)
         lst.focus()
         more_tip = "n: 加载下一页  |  " if self._has_more else "已加载全部  |  "
-        hint.update(f"共 {len(self._replies)} 条回复  |  {more_tip}j/k: 移动  |  Esc/q: 关闭")
+        hint.update(f"共 {len(self._replies)} 条回复  |  w: 回复该楼  |  {more_tip}j/k: 移动  |  Esc/q: 关闭")
 
     def action_cursor_down(self) -> None:
         self.query_one("#subcomment-list", OptionList).action_cursor_down()
@@ -354,6 +358,255 @@ class SubCommentModal(ModalScreen[None]):
     async def action_load_more(self) -> None:
         if self._has_more:
             await self._fetch_page(self._page + 1)
+
+    def action_reply_root(self) -> None:
+        root = self.thread.root
+        def _after(res: dict[str, Any] | None) -> None:
+            if res is not None:
+                asyncio.create_task(self._fetch_page(1))
+
+        self.app.push_screen(
+            CommentModal(
+                self.client,
+                link_id=self.link_id,
+                root_id=root.commentid,
+                reply_id=root.commentid,
+                target_label=f"回复 #{root.floor_num}楼 @{root.username}",
+            ),
+            _after,
+        )
+
+    def action_close_modal(self) -> None:
+        self.dismiss(None)
+
+
+class ImagePreviewModal(ModalScreen[None]):
+    """终端内嵌图片预览浮层（支持悬停触发、左右切换、macOS QuickLook 原图）."""
+
+    BINDINGS = [
+        Binding("escape", "close_modal", "关闭"),
+        Binding("q", "close_modal", "关闭"),
+        Binding("left", "prev_image", "上一张"),
+        Binding("h", "prev_image", "上一张", show=False),
+        Binding("p", "prev_image", "上一张", show=False),
+        Binding("right", "next_image", "下一张"),
+        Binding("l", "next_image", "下一张", show=False),
+        Binding("n", "next_image", "下一张", show=False),
+        Binding("space", "open_quicklook", "原图高清弹窗"),
+        Binding("i", "open_quicklook", "原图高清弹窗", show=False),
+        Binding("b", "open_browser", "浏览器打开"),
+    ]
+
+    def __init__(self, images: list[str], start_index: int = 0) -> None:
+        super().__init__()
+        self.images = images
+        self.index = max(0, min(start_index, len(images) - 1)) if images else 0
+        self._cached_paths: dict[int, Path] = {}
+        self._load_task: asyncio.Task[None] | None = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="img-preview-dialog"):
+            yield Static("", id="img-preview-title")
+            yield Static("⏳ 正在加载图片...", id="img-preview-box")
+            yield Static("←/→:切换  Space/i:高清原图弹窗  b:浏览器  Esc/点击外部:关闭", id="img-preview-hint")
+
+    def on_mount(self) -> None:
+        self._start_load()
+
+    def on_unmount(self) -> None:
+        if self._load_task and not self._load_task.done():
+            self._load_task.cancel()
+
+    def on_click(self, event: events.Click) -> None:
+        if event.widget is self:
+            self.dismiss(None)
+
+    def _start_load(self) -> None:
+        if self._load_task and not self._load_task.done():
+            self._load_task.cancel()
+        self._load_task = asyncio.create_task(self._load_current())
+
+    async def _load_current(self) -> None:
+        title_lbl = self.query_one("#img-preview-title", Static)
+        box = self.query_one("#img-preview-box", Static)
+        if not self.images:
+            title_lbl.update("🖼 图片预览")
+            box.update("暂无可预览的图片")
+            return
+
+        total = len(self.images)
+        url = self.images[self.index]
+        title_lbl.update(f"🖼 图片预览 ({self.index + 1}/{total})")
+        box.update("⏳ 正在下载并解码图片...")
+
+        try:
+            path = self._cached_paths.get(self.index)
+            if path is None:
+                path = await fetch_image_to_cache(url)
+                self._cached_paths[self.index] = path
+            max_w = max(24, min(68, (self.app.size.width or 80) - 12))
+            max_h = max(10, min(26, (self.app.size.height or 24) - 6))
+            rendered = render_image_file_rich(path, max_width=max_w, max_height=max_h)
+            box.update(rendered)
+        except Exception as exc:
+            box.update(f"❌ 图片加载失败: {exc}\n(按 b 可直接在浏览器打开原图)")
+
+    def action_prev_image(self) -> None:
+        if len(self.images) > 1:
+            self.index = (self.index - 1) % len(self.images)
+            self._start_load()
+
+    def action_next_image(self) -> None:
+        if len(self.images) > 1:
+            self.index = (self.index + 1) % len(self.images)
+            self._start_load()
+
+    async def action_open_quicklook(self) -> None:
+        if not self.images:
+            return
+        url = self.images[self.index]
+        path = self._cached_paths.get(self.index)
+        if path is None:
+            try:
+                path = await fetch_image_to_cache(url)
+                self._cached_paths[self.index] = path
+            except Exception:
+                webbrowser.open(url)
+                return
+        open_image_quicklook(path)
+
+    def action_open_browser(self) -> None:
+        if self.images:
+            webbrowser.open(self.images[self.index])
+
+    def action_close_modal(self) -> None:
+        self.dismiss(None)
+
+
+class CommentModal(ModalScreen[dict[str, Any] | None]):
+    """发表帖子评论 / 楼中楼回复弹窗."""
+
+    BINDINGS = [
+        Binding("escape", "close_modal", "取消"),
+    ]
+
+    def __init__(
+        self,
+        client: HeyboxClient,
+        link_id: str,
+        root_id: str = "-1",
+        reply_id: str = "-1",
+        target_label: str = "",
+    ) -> None:
+        super().__init__()
+        self.client = client
+        self.link_id = link_id
+        self.root_id = root_id
+        self.reply_id = reply_id
+        self.target_label = target_label or f"评论帖子 #{link_id}"
+        self._submitting = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="comment-dialog"):
+            yield Static("💬 发表评论", id="comment-title")
+            yield Static(self.target_label, id="comment-target")
+            yield Input(placeholder="输入评论内容，按 Enter 发送（支持 [cube_滑稽] 等表情）...", id="comment-input")
+            yield Static("Enter: 发送  |  Esc: 取消", id="comment-status")
+
+    def on_mount(self) -> None:
+        self.query_one("#comment-input", Input).focus()
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._submitting:
+            return
+        text = event.value.strip()
+        status = self.query_one("#comment-status", Static)
+        if not text:
+            status.update("⚠️ 评论内容不能为空")
+            return
+        self._submitting = True
+        status.update("⏳ 正在发送评论...")
+        try:
+            res = await self.client.create_comment(
+                link_id=self.link_id,
+                text=text,
+                root_id=self.root_id,
+                reply_id=self.reply_id,
+            )
+        except Exception as exc:
+            self._submitting = False
+            status.update(f"❌ {exc}")
+            return
+        status.update("✅ 评论发送成功！")
+        self.dismiss(res)
+
+    def action_close_modal(self) -> None:
+        self.dismiss(None)
+
+
+class NewPostModal(ModalScreen[dict[str, Any] | None]):
+    """发布新帖弹窗."""
+
+    BINDINGS = [
+        Binding("escape", "close_modal", "取消"),
+        Binding("ctrl+s", "submit_post", "发布"),
+    ]
+
+    def __init__(self, client: HeyboxClient, default_topic: str = "盒友杂谈") -> None:
+        super().__init__()
+        self.client = client
+        self.default_topic = default_topic or "盒友杂谈"
+        self._submitting = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="newpost-dialog"):
+            yield Static("📝 发布新帖 (Ctrl+S 提交 / Esc 取消)", id="newpost-title")
+            yield Input(value=self.default_topic, placeholder="目标板块名或 topic_id（默认: 盒友杂谈）", id="post-topic-input")
+            yield Input(placeholder="输入帖子标题...", id="post-title-input")
+            yield TextArea(placeholder="输入帖子正文内容...", id="post-content-area")
+            yield Static("提示: 发帖需先扫码登录 (按 l)", id="newpost-status")
+            with Horizontal(id="newpost-actions"):
+                yield Button("取消 (Esc)", id="btn-cancel")
+                yield Button("发布 (Ctrl+S)", id="btn-publish", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#post-title-input", Input).focus()
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-cancel":
+            self.dismiss(None)
+        elif event.button.id == "btn-publish":
+            await self.action_submit_post()
+
+    async def action_submit_post(self) -> None:
+        if self._submitting:
+            return
+        topic_raw = self.query_one("#post-topic-input", Input).value.strip() or "盒友杂谈"
+        title = self.query_one("#post-title-input", Input).value.strip()
+        content = self.query_one("#post-content-area", TextArea).text.strip()
+        status = self.query_one("#newpost-status", Static)
+
+        if not title:
+            status.update("⚠️ 请输入帖子标题")
+            self.query_one("#post-title-input", Input).focus()
+            return
+        if not content:
+            status.update("⚠️ 请输入帖子正文")
+            self.query_one("#post-content-area", TextArea).focus()
+            return
+
+        self._submitting = True
+        status.update("⏳ 正在解析板块并发布...")
+        try:
+            topic = await self.client.resolve_topic(topic_raw)
+            topic_id = topic.topic_id if topic is not None else (topic_raw if topic_raw.isdigit() else "7214")
+            res = await self.client.create_post(title=title, content=content, topic_id=topic_id)
+        except Exception as exc:
+            self._submitting = False
+            status.update(f"❌ {exc}")
+            return
+        status.update("✅ 发帖成功！")
+        self.dismiss(res)
 
     def action_close_modal(self) -> None:
         self.dismiss(None)

@@ -13,6 +13,8 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import ContentSwitcher, OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -27,7 +29,15 @@ from xhh.models import (
     format_count,
     format_time,
 )
-from xhh.tui.modals import BossScreen, QRLoginModal, SearchModal, SubCommentModal
+from xhh.tui.modals import (
+    BossScreen,
+    CommentModal,
+    ImagePreviewModal,
+    NewPostModal,
+    QRLoginModal,
+    SearchModal,
+    SubCommentModal,
+)
 
 DEFAULT_PAGE_SIZE = 10
 FEED_PAGE_SIZE = DEFAULT_PAGE_SIZE
@@ -70,6 +80,46 @@ def _truncate_single_line(text: str, max_cells: int) -> str:
     return "".join(out) + "…"
 
 
+class ImagePill(Static):
+    """支持鼠标悬停（250ms 防抖）与点击预览图片的胶囊按钮."""
+
+    def __init__(self, label: str, image_index: int, image_url: str) -> None:
+        super().__init__(label, classes="image-pill")
+        self.image_index = image_index
+        self.image_url = image_url
+        self.tooltip = f"悬停或点击预览图片 {image_index + 1}"
+        self._hover_timer: Timer | None = None
+
+    def _cancel_timer(self) -> None:
+        if self._hover_timer is not None:
+            self._hover_timer.stop()
+            self._hover_timer = None
+
+    def on_enter(self) -> None:
+        self._cancel_timer()
+        self._hover_timer = self.set_timer(0.25, self._trigger_hover)
+
+    def on_leave(self) -> None:
+        self._cancel_timer()
+
+    def on_unmount(self) -> None:
+        self._cancel_timer()
+
+    def on_click(self) -> None:
+        self._cancel_timer()
+        self._open_preview()
+
+    def _trigger_hover(self) -> None:
+        self._hover_timer = None
+        if self.is_mounted and not isinstance(self.app.screen, ModalScreen):
+            self._open_preview()
+
+    def _open_preview(self) -> None:
+        app = self.app
+        if isinstance(app, HeyboxApp):
+            app.open_image_preview(self.image_index)
+
+
 class HeyboxApp(App[None]):
     """小黑盒 CLI 终端交互应用."""
 
@@ -99,6 +149,10 @@ class HeyboxApp(App[None]):
         Binding("r", "refresh_view", "刷新"),
         Binding("o", "toggle_owner_only", "只看楼主"),
         Binding("c", "toggle_detail_view", "切换正文/评论"),
+        Binding("i", "preview_images", "看图"),
+        Binding("m", "comment_post", "发评论"),
+        Binding("w", "reply_comment", "回复评论"),
+        Binding("P", "new_post", "发帖"),
         Binding("e", "expand_subcomments", "楼中楼"),
         Binding("b", "open_browser", "浏览器打开"),
         Binding("grave_accent", "boss_key", "老板键"),
@@ -177,12 +231,13 @@ class HeyboxApp(App[None]):
                         with Vertical(id="detail-body-view"):
                             with VerticalScroll(id="post-body-scroll"):
                                 yield Static("", id="detail-body")
+                            yield Horizontal(id="image-pills-bar")
                         with Vertical(id="detail-comments-view"):
                             yield Static("", id="comment-bar")
                             yield OptionList(id="comment-list")
 
         yield Static(
-            "j/k:选定  Enter:进入  n/p:翻页  c:正文/评论  /:搜板块  l:扫码登录  1/2:综合/热点  `:老板键  q:返回/退出",
+            "j/k:移动 Enter:进 n/p:翻页 c:正文/评 i:看图 m:评论 P:发帖 /:搜 l:登录 `:老板键 q:退",
             id="status-footer",
         )
 
@@ -610,14 +665,15 @@ class HeyboxApp(App[None]):
         if self._detail_tab == "body":
             t.append(" [ 📄 正文 ] ", style="bold black on #58a6ff")
             t.append(f"  💬 评论 ({cmt_cnt})", style="dim")
-            t.append("  |  c:看评论  n/p/Space:整屏翻页  b:浏览器  Esc:返回", style="dim")
+            img_tip = " i:看图" if (detail and detail.images) else ""
+            t.append(f"  |  c:看评论 m:发评论{img_tip} n/p:翻页 Esc:返回", style="dim")
         else:
             t.append(" 📄 正文 ", style="dim")
             t.append(
                 f" [ 💬 评论 ({cmt_cnt}) · 第 {self._comment_page}/{total_pg} 页{owner_tag} ] ",
                 style="bold black on #f0883e",
             )
-            t.append(f"  |  c:回正文  s:{sort_lbl}  o:楼主  e:楼中楼  n/p:翻页", style="dim")
+            t.append(f"  |  c:正文 w:回复 s:{sort_lbl} o:楼主 e:楼中楼 n/p:翻页", style="dim")
         tabbar.update(t)
 
     def _switch_detail_tab(self, tab: str) -> None:
@@ -801,6 +857,15 @@ class HeyboxApp(App[None]):
         self.query_one("#detail-body", Static).update(body_text)
         if reset_tab:
             self.query_one("#post-body-scroll", VerticalScroll).scroll_home(animate=False)
+
+        pills_bar = self.query_one("#image-pills-bar", Horizontal)
+        await pills_bar.remove_children()
+        if detail.images:
+            pills_bar.display = True
+            for idx, img_url in enumerate(detail.images):
+                await pills_bar.mount(ImagePill(f"🖼 图{idx + 1}", idx, img_url))
+        else:
+            pills_bar.display = False
 
         await self._show_comment_page(1)
         self._switch_detail_tab("body" if reset_tab else self._detail_tab)
@@ -1091,6 +1156,97 @@ class HeyboxApp(App[None]):
             if hl is not None and 0 <= hl < len(self._posts):
                 lid = self._posts[hl].linkid
                 webbrowser.open(f"https://www.xiaoheihe.cn/app/bbs/link/{lid}")
+
+    def open_image_preview(self, index: int = 0) -> None:
+        if not self._current_detail or not self._current_detail.images:
+            return
+        self.push_screen(ImagePreviewModal(self._current_detail.images, start_index=index))
+
+    def action_preview_images(self) -> None:
+        if not self._in_detail_view() or not self._current_detail:
+            return
+        if self._detail_tab == "comments":
+            cmt_list = self.query_one("#comment-list", OptionList)
+            hl = cmt_list.highlighted
+            if hl is not None and 0 <= hl < len(self._detail_threads):
+                imgs = self._detail_threads[hl].root.imgs
+                if imgs:
+                    self.push_screen(ImagePreviewModal(imgs, start_index=0))
+                    return
+        if self._current_detail.images:
+            self.push_screen(ImagePreviewModal(self._current_detail.images, start_index=0))
+
+    def action_comment_post(self) -> None:
+        if not self._in_detail_view() or not self._current_detail:
+            return
+        link_id = self._current_detail.linkid
+
+        def _after_comment(res: dict[str, Any] | None) -> None:
+            if res is not None:
+                self._detail_tab = "comments"
+                self._schedule_load(
+                    self._open_post_detail(
+                        link_id,
+                        summary=self._current_post_summary,
+                        reset_tab=False,
+                    )
+                )
+
+        self.push_screen(
+            CommentModal(
+                self.client,
+                link_id=link_id,
+                target_label=f"发表评论到: {self._current_detail.title[:40]}",
+            ),
+            _after_comment,
+        )
+
+    def action_reply_comment(self) -> None:
+        if not self._in_detail_view() or not self._current_detail:
+            return
+        if self._detail_tab == "comments":
+            cmt_list = self.query_one("#comment-list", OptionList)
+            hl = cmt_list.highlighted
+            if hl is not None and 0 <= hl < len(self._detail_threads):
+                root = self._detail_threads[hl].root
+                link_id = self._current_detail.linkid
+
+                def _after_reply(res: dict[str, Any] | None) -> None:
+                    if res is not None:
+                        self._schedule_load(
+                            self._open_post_detail(
+                                link_id,
+                                summary=self._current_post_summary,
+                                reset_tab=False,
+                            )
+                        )
+
+                self.push_screen(
+                    CommentModal(
+                        self.client,
+                        link_id=link_id,
+                        root_id=root.commentid,
+                        reply_id=root.commentid,
+                        target_label=f"回复 #{root.floor_num}楼 @{root.username}",
+                    ),
+                    _after_reply,
+                )
+                return
+        self.action_comment_post()
+
+    def action_new_post(self) -> None:
+        default_topic = self._current_topic.name if self._current_topic else "盒友杂谈"
+
+        def _after_publish(res: dict[str, Any] | None) -> None:
+            if not res:
+                return
+            new_lid = str(res.get("link_id") or "")
+            if new_lid:
+                self._schedule_load(self._open_post_detail(new_lid, reset_tab=True))
+            else:
+                self.action_refresh_view()
+
+        self.push_screen(NewPostModal(self.client, default_topic=default_topic), _after_publish)
 
     def action_boss_key(self) -> None:
         self.push_screen(BossScreen())

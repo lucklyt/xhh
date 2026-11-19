@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 from textual.widgets import ContentSwitcher, OptionList, Static
 
 from xhh.cli import main as cli_main
 from xhh.client import HeyboxAPIError, HeyboxClient
 from xhh.config import AppConfig, SessionData
 from xhh.hkey import compute_hkey, generate_hkey_params
+from xhh.image import render_image_bytes_rich
 from xhh.models import (
     CommentReply,
     CommentThread,
@@ -28,8 +31,16 @@ from xhh.models import (
     translate_emojis,
 )
 from xhh.qr import render_qr_half_blocks, render_qr_rich, save_qr_html
-from xhh.tui.app import FEED_PAGE_SIZE, HeyboxApp
-from xhh.tui.modals import BossScreen, QRLoginModal, SearchModal, SubCommentModal
+from xhh.tui.app import FEED_PAGE_SIZE, HeyboxApp, ImagePill
+from xhh.tui.modals import (
+    BossScreen,
+    CommentModal,
+    ImagePreviewModal,
+    NewPostModal,
+    QRLoginModal,
+    SearchModal,
+    SubCommentModal,
+)
 
 
 def test_hkey_computation_and_params() -> None:
@@ -76,6 +87,59 @@ def test_qr_rendering() -> None:
     assert html_path.exists()
     content = html_path.read_text(encoding="utf-8")
     assert "<svg" in content and "qr_login" in content
+
+
+def test_image_rendering() -> None:
+    img = Image.new("RGB", (40, 20), (255, 100, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    rendered = render_image_bytes_rich(buf.getvalue(), max_width=20, max_height=10)
+    assert set(rendered.plain) <= {"▀", "\n"}
+    lines = rendered.plain.splitlines()
+    assert len(lines) == 5  # 20x10 px -> 5 rows of half-blocks
+    assert len(lines[0]) == 20
+    assert any("#ff641e" in str(span.style) for span in rendered.spans)
+
+
+def test_client_create_comment_and_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _run() -> None:
+        # 1. 未登录时应当拦截
+        anon = HeyboxClient(session=SessionData())
+        async with anon:
+            with pytest.raises(HeyboxAPIError) as exc1:
+                await anon.create_comment("12345", "你好")
+            assert exc1.value.status == "login"
+            with pytest.raises(HeyboxAPIError) as exc2:
+                await anon.create_post("标题", "正文")
+            assert exc2.value.status == "login"
+
+        # 2. 已登录时校验表单与返回解析
+        authed = HeyboxClient(session=SessionData(heybox_id="1001", pkey="pk_test", nickname="tester"))
+        captured: list[tuple[str, dict[str, Any]]] = []
+
+        async def _fake_post(path: str, data: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
+            captured.append((path, data))
+            if path == "/bbs/app/comment/create":
+                return {"status": "ok", "msg": "评论成功", "result": {"comment": [{"commentid": 777}]}}
+            return {"status": "ok", "msg": "发布成功", "link_id": "999888", "result": {"link_id": "999888"}}
+
+        monkeypatch.setattr(authed, "_post", _fake_post)
+        async with authed:
+            c_res = await authed.create_comment("12345", "测试评论", root_id="88", reply_id="99")
+            assert c_res["status"] == "ok"
+            assert captured[0][0] == "/bbs/app/comment/create"
+            assert captured[0][1]["link_id"] == "12345"
+            assert captured[0][1]["root_id"] == "88"
+            assert captured[0][1]["reply_id"] == "99"
+
+            p_res = await authed.create_post("测试标题", "测试正文内容", topic_id="43")
+            assert p_res["status"] == "ok"
+            assert p_res["link_id"] == "999888"
+            assert captured[1][0] == "/bbs/app/api/link/post"
+            assert captured[1][1]["topic_ids"] == "43"
+            assert json.loads(captured[1][1]["text"]) == [{"type": "text", "text": "测试正文内容"}]
+
+    asyncio.run(_run())
 
 
 def test_config_and_session_isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,6 +317,24 @@ def test_cli_post_floors_and_json(
     assert rc3 == 0
     data3 = json.loads(capsys.readouterr().out)
     assert [c["floor_num"] for c in data3["comments"]] == [4, 5, 6]
+
+
+def test_cli_comment_and_publish_json(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("xhh.cli.HeyboxClient", lambda *a, **kw: _FakeClient())
+
+    rc = cli_main(["comment", "197278200", "Cli评论测试", "--json"])
+    assert rc == 0
+    c_data = json.loads(capsys.readouterr().out)
+    assert c_data["status"] == "ok"
+
+    rc2 = cli_main(["publish", "-t", "Cli发帖标题", "-c", "Cli发帖正文", "--topic", "CS2", "--json"])
+    assert rc2 == 0
+    p_data = json.loads(capsys.readouterr().out)
+    assert p_data["status"] == "ok"
+    assert p_data["topic_id"] == "43"
+    assert p_data["link_id"] == "30001"
 
 
 class _FakeClient:
@@ -483,6 +565,16 @@ class _FakeClient:
             "requires_login": True,
         }
 
+    async def create_comment(
+        self, link_id: Any, text: str, root_id: Any = "-1", reply_id: Any = "-1"
+    ) -> dict[str, Any]:
+        return {"status": "ok", "msg": "评论成功", "result": {"comment": [{"commentid": "9999"}]}}
+
+    async def create_post(
+        self, title: str, content: str, topic_id: Any = "7214", imgs: Any = None
+    ) -> dict[str, Any]:
+        return {"status": "ok", "link_id": "30001", "msg": "发布成功", "result": {"link_id": "30001"}}
+
 
 def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XHH_CONFIG_DIR", str(tmp_path))
@@ -520,7 +612,7 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             assert feed_list.option_count == 10
             assert app._posts[0].linkid == "10001"
 
-            # 2. 按 Enter 进入帖子详情视图：默认只显示正文，不显示评论
+            # 2. 按 Enter 进入帖子详情视图：默认只显示正文，不显示评论，且存在可悬停图片胶囊
             await pilot.press("enter")
             await pilot.pause(0.2)
             switcher = app.query_one("#content-switcher", ContentSwitcher)
@@ -528,6 +620,28 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             assert switcher.current == "detail-pane"
             assert sub_switcher.current == "detail-body-view"
             assert "测试帖子完整标题" in str(app.query_one("#detail-header", Static).render())
+
+            pills = app.query(ImagePill)
+            assert len(pills) == 1
+            # 模拟鼠标悬停触发图片预览浮层并关闭
+            pills.first()._trigger_hover()
+            await pilot.pause(0.1)
+            assert isinstance(app.screen, ImagePreviewModal)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+
+            # 按 i 也可直接打开图片预览浮层，按 m 打开评论弹窗
+            await pilot.press("i")
+            await pilot.pause(0.1)
+            assert isinstance(app.screen, ImagePreviewModal)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            assert isinstance(app.screen, CommentModal)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
 
             # 3. 按 c 切换到评论视图：每页固定 10 条无滚动，按 n 翻到第 2 页（5 条），按 e 弹出楼中楼弹窗
             await pilot.press("c")
@@ -582,6 +696,13 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.press("`")
             await pilot.pause(0.1)
             assert isinstance(app.screen, BossScreen)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+
+            # 7b. 按 P (Shift+p) 弹出发帖弹窗并关闭
+            await pilot.press("P")
+            await pilot.pause(0.1)
+            assert isinstance(app.screen, NewPostModal)
             await pilot.press("escape")
             await pilot.pause(0.1)
 

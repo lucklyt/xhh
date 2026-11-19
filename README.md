@@ -80,7 +80,12 @@ xhh post <link_id> --owner --page 1
 
 # 搜索游戏板块与帖子（支持 --json）
 xhh search 黑神话
-xhh feed -n 15 --json
+xhh feed -n 10 --json
+
+# 发表评论与发布新帖（需先扫码登录 `xhh login`）
+xhh comment <link_id> "说得太对了[cube_滑稽]"
+xhh comment <link_id> "确实" --root-id <主评ID> --reply-id <目标评论ID>
+xhh publish -t "测试标题" -c "帖子正文内容" --topic 盒友杂谈
 ```
 
 ## TUI 全屏交互快捷键
@@ -99,6 +104,9 @@ xhh feed -n 15 --json
 | `o` | 详情页切换 **只看楼主 / 全部评论** |
 | `c` | 详情页在 **「📄 帖子正文」** 与 **「💬 评论区」** 视图间一键切换 |
 | `e` | 详情页展开当前选中评论的完整 **楼中楼回复** |
+| `i` / 鼠标悬停图片胶囊 | 在终端内嵌预览图片（浮层内按 `Space` 可呼出 macOS QuickLook 高清原图） |
+| `m` / `w` | 详情页发表主楼评论 (`m`) 或回复当前选中的评论 (`w`) |
+| `P` (`Shift+P`) | 弹出发布新帖窗口 (`Ctrl+S` 提交) |
 | `b` | 在系统默认浏览器中打开原帖（查看高清大图或视频） |
 | `r` | 刷新当前视图 |
 | `` ` `` (反引号) | **老板键 (Boss Key)**：瞬间切换为程序编译测试日志界面 |
