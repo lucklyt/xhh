@@ -489,7 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="tui_theme",
         choices=["elegant", "stealth"],
         default=None,
-        help="指定 TUI 界面主题: elegant(雅致) / stealth(极简低调)",
+        help="指定 TUI 界面主题: stealth(极简低调，默认) / elegant(华丽炫彩)",
     )
     parser.add_argument("--post", dest="direct_post_id", help="不进入界面直接查看指定帖子 link_id")
     parser.add_argument("-f", "--floors", dest="direct_floors", help="配合 --post 使用，指定评论楼层范围 (如 1-10)")
@@ -511,7 +511,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="sub_tui_theme",
         choices=["elegant", "stealth"],
         default=None,
-        help="指定 TUI 界面主题: elegant(雅致) / stealth(极简低调)",
+        help="指定 TUI 界面主题: stealth(极简低调，默认) / elegant(华丽炫彩)",
     )
 
     p_login = sub.add_parser("login", help="在终端显示二维码并扫码登录小黑盒")

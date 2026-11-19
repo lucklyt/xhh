@@ -47,9 +47,9 @@ cd xhh
 ## 快速开始
 
 ```bash
-# 1. 启动全屏交互式 TUI（默认雅致主题，也支持极简低调终端主题）
+# 1. 启动全屏交互式 TUI（默认极简低调终端风 stealth，按 t 键或加 --theme elegant 切为华丽炫彩主题）
 xhh
-xhh --theme stealth
+xhh --theme elegant
 
 # 2. 终端扫码登录（使用小黑盒 App 扫码）
 xhh login
@@ -111,7 +111,7 @@ xhh publish -t "图文推广标题" -c "正文内容" -i assets/tui_feed.png -i 
 | `n` / `p` | 列表自适应单页刷新翻页（默认 10 条，随窗口高度自动调整）；正文整屏翻页；评论翻页 |
 | `o` | 详情页切换 **只看楼主 / 全部评论** |
 | `c` | 详情页在 **「帖子正文」** 与 **「评论区」** 视图间一键切换 |
-| `t` | 一键切换 **双主题**：`elegant`（雅致石板灰蓝）↔ `stealth`（极简终端灰阶、零 Emoji） |
+| `t` | 一键切换 **双主题**：`stealth`（默认，极简终端灰阶、零 Emoji）↔ `elegant`（华丽夜空蓝、全彩图标） |
 | `e` | 详情页展开当前选中评论的完整 **楼中楼回复** |
 | `i` / 鼠标悬停图片胶囊 | 在终端内嵌预览图片（浮层内按 `Space` 可呼出 macOS QuickLook 高清原图） |
 | `m` / `w` | 详情页发表主楼评论 (`m`) 或回复当前选中的评论 (`w`) |
@@ -124,4 +124,4 @@ xhh publish -t "图文推广标题" -c "正文内容" -i assets/tui_feed.png -i 
 ## 会话与配置文件
 
 - 登录会话：`~/.config/xhh/session.json`（权限 `0600`，可通过 `XHH_CONFIG_DIR` 覆盖目录）
-- 板块收藏与主题偏好：`~/.config/xhh/config.json`（含 `theme`: `elegant` / `stealth`）
+- 板块收藏与主题偏好：`~/.config/xhh/config.json`（含 `theme`: `stealth` / `elegant`）

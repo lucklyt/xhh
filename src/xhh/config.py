@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-DEFAULT_THEME = "elegant"
+DEFAULT_THEME = "stealth"
 VALID_THEMES: tuple[str, str] = ("elegant", "stealth")
 
 DEFAULT_FAVORITE_TOPICS: list[dict[str, Any]] = [

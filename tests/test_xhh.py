@@ -227,10 +227,10 @@ def test_config_and_session_isolation(tmp_path: Path, monkeypatch: pytest.Monkey
     assert not SessionData.load().is_logged_in
 
     cfg = AppConfig.load()
-    assert cfg.theme == "elegant"
-    assert cfg.set_theme("stealth") == "stealth"
-    assert AppConfig.load().theme == "stealth"
+    assert cfg.theme == "stealth"
     assert cfg.set_theme("elegant") == "elegant"
+    assert AppConfig.load().theme == "elegant"
+    assert cfg.set_theme("stealth") == "stealth"
     assert len(cfg.favorite_topics) >= 1
     added = cfg.toggle_favorite(733575, "影之刃零")
     assert added is True
@@ -831,30 +831,32 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.pause(0.2)
             assert app._topic_sort_idx == 1
 
-            # 9. 按 t 实时切换双主题 (elegant <-> stealth) 并持久化
-            assert app.theme_mode == "elegant"
-            assert not app.has_class("theme-stealth")
-            await pilot.press("t")
-            await pilot.pause(0.1)
+            # 9. 默认以 stealth 极简主题启动，按 t 实时切换至 elegant 华丽主题并可切回
             assert app.theme_mode == "stealth"
             assert app.has_class("theme-stealth")
             assert app.title == "zsh"
-            assert AppConfig.load().theme == "stealth"
             assert "xhh ::" in str(app.query_one("#top-title", Static).render())
             assert "极简" not in str(app.query_one("#status-footer", Static).render())
 
-            # 进入帖子查看 stealth 下图片胶囊变为 [img:1] 且切回 elegant 变为 [图1]
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-            pill = app.query(ImagePill).first()
-            assert "[img:1]" in str(pill.render())
             await pilot.press("t")
             await pilot.pause(0.1)
             assert app.theme_mode == "elegant"
             assert not app.has_class("theme-stealth")
             assert app.title == "xhh"
             assert AppConfig.load().theme == "elegant"
-            assert "[图1]" in str(pill.render())
+            assert "小黑盒 TUI" in str(app.query_one("#top-title", Static).render())
+
+            # 进入帖子查看 elegant 下图片胶囊为 🖼 图1，按 t 切回 stealth 变为 [img:1]
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            pill = app.query(ImagePill).first()
+            assert "🖼 图1" in str(pill.render())
+            await pilot.press("t")
+            await pilot.pause(0.1)
+            assert app.theme_mode == "stealth"
+            assert app.has_class("theme-stealth")
+            assert AppConfig.load().theme == "stealth"
+            assert "[img:1]" in str(pill.render())
 
     asyncio.run(_run())
 

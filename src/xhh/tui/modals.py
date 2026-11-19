@@ -75,12 +75,12 @@ class QRLoginModal(ModalScreen[SessionData | None]):
             if stealth:
                 title.update(f"qr-login | @{self.client.session.nickname}{lvl}")
             else:
-                title.update(f"❖ 扫码登录  |  ● @{self.client.session.nickname}{lvl}")
+                title.update(f"📱 小黑盒扫码登录  |  🟢 @{self.client.session.nickname}{lvl}")
         else:
             if stealth:
                 title.update("qr-login | auth: guest")
             else:
-                title.update("❖ 扫码登录  |  ○ 未登录")
+                title.update("📱 小黑盒扫码登录  |  ⚪ 未登录")
 
     def _start_qr_flow(self) -> None:
         if self._poll_task and not self._poll_task.done():
@@ -185,7 +185,7 @@ class SearchModal(ModalScreen[dict[str, Any] | None]):
         self._search_task: asyncio.Task[None] | None = None
 
     def compose(self) -> ComposeResult:
-        title = "search [topic / post]" if _is_stealth(self) else "搜索游戏板块 / 帖子 (输入关键词后回车，↑/↓ 选择)"
+        title = "search [topic / post]" if _is_stealth(self) else "🔍 搜索游戏板块 / 帖子 (输入关键词后回车，↑/↓ 选择)"
         with Vertical(id="search-dialog"):
             yield Static(title, id="search-title")
             yield Input(placeholder="输入游戏名或关键词，例如: 黑神话、CS2、Steam...", id="search-input")
@@ -226,9 +226,9 @@ class SearchModal(ModalScreen[dict[str, Any] | None]):
             opt_id = f"topic:{idx}"
             self._entries[opt_id] = {"type": "topic", "topic": topic}
             prompt = Text.assemble(
-                ("[topic] " if stealth else "[板块] ", "#8b949e" if stealth else "bold #7aa2f7"),
-                (strip_emojis(topic.name) if stealth else topic.name, "#b0b8c0" if stealth else "bold #c0caf5"),
-                (f"  (id: {topic.topic_id})", "#687078" if stealth else "#787c99"),
+                ("[topic] " if stealth else "🎮 [板块] ", "#8b949e" if stealth else "bold #38bdf8"),
+                (strip_emojis(topic.name) if stealth else topic.name, "#b0b8c0" if stealth else "bold #f8fafc"),
+                (f"  (id: {topic.topic_id})", "#687078" if stealth else "#94a3b8"),
             )
             options.append(Option(prompt, id=opt_id))
 
@@ -240,12 +240,12 @@ class SearchModal(ModalScreen[dict[str, Any] | None]):
             stats_s = (
                 f"  @{author} | up:{format_count(post.up)} cmt:{format_count(post.comment_num)}"
                 if stealth
-                else f"  @{author} · 赞 {format_count(post.up)} · 评 {format_count(post.comment_num)}"
+                else f"  👤 @{author} · 👍{format_count(post.up)} · 💬{format_count(post.comment_num)}"
             )
             prompt = Text.assemble(
-                ("[post] " if stealth else "[帖子] ", "#8b949e" if stealth else "bold #9ece6a"),
-                (post_title, "#b0b8c0" if stealth else "#c0caf5"),
-                (stats_s, "#687078" if stealth else "#787c99"),
+                ("[post] " if stealth else "📝 [帖子] ", "#8b949e" if stealth else "bold #4ade80"),
+                (post_title, "#b0b8c0" if stealth else "#f1f5f9"),
+                (stats_s, "#687078" if stealth else "#94a3b8"),
             )
             options.append(Option(prompt, id=opt_id))
 
@@ -253,8 +253,8 @@ class SearchModal(ModalScreen[dict[str, Any] | None]):
             opt_id = f"sug:{idx}"
             self._entries[opt_id] = {"type": "suggestion", "query": sug}
             prompt = Text.assemble(
-                ("[key] " if stealth else "[热词] ", "#687078" if stealth else "#e0af68"),
-                (strip_emojis(sug) if stealth else sug, "#b0b8c0" if stealth else "#c0caf5"),
+                ("[key] " if stealth else "💡 [热词] ", "#687078" if stealth else "bold #fbbf24"),
+                (strip_emojis(sug) if stealth else sug, "#b0b8c0" if stealth else "#f1f5f9"),
             )
             options.append(Option(prompt, id=opt_id))
 
@@ -310,13 +310,13 @@ class SubCommentModal(ModalScreen[None]):
         stealth = _is_stealth(self)
         root_author = strip_emojis(root.username) if stealth else root.username
         root_body = strip_emojis(root.text) if stealth else root.text
-        up_lbl = f"up:{root.up}" if stealth else f"赞 {root.up}"
+        up_lbl = f"up:{root.up}" if stealth else f"👍 {root.up}"
         root_text = Text.assemble(
-            (f"#{root.floor_num}楼 ", "#8b949e" if stealth else "bold #7aa2f7"),
-            (f"@{root_author}", "#b0b8c0" if stealth else "bold #e0af68"),
-            (f" (Lv.{root.user_level})" if root.user_level else "", "#687078" if stealth else "#787c99"),
-            (f" · {up_lbl}\n", "#687078" if stealth else "#9ece6a"),
-            (root_body or "[图片评论]", "#b0b8c0" if stealth else "#c0caf5"),
+            (f"#{root.floor_num}楼 ", "#8b949e" if stealth else "bold #38bdf8"),
+            (f"@{root_author}", "#b0b8c0" if stealth else "bold #fbbf24"),
+            (f" (Lv.{root.user_level})" if root.user_level else "", "#687078" if stealth else "#94a3b8"),
+            (f" · {up_lbl}\n", "#687078" if stealth else "#4ade80"),
+            (root_body or "[图片评论]", "#b0b8c0" if stealth else "#f1f5f9"),
         )
         with Vertical(id="subcomment-dialog"):
             yield Static(root_text, id="subcomment-root")
@@ -351,27 +351,27 @@ class SubCommentModal(ModalScreen[None]):
         for r in self._replies:
             t = Text()
             uname = strip_emojis(r.username) if stealth else r.username
-            t.append(f"@{uname}", style="#b0b8c0" if stealth else "bold #7aa2f7")
+            t.append(f"@{uname}", style="#b0b8c0" if stealth else "bold #38bdf8")
             if r.user_level is not None:
-                t.append(f" (Lv.{r.user_level})", style="#687078" if stealth else "#787c99")
+                t.append(f" (Lv.{r.user_level})", style="#687078" if stealth else "#94a3b8")
             if r.reply_to_user:
                 target_u = strip_emojis(r.reply_to_user) if stealth else r.reply_to_user
-                t.append(" 回复 ", style="#687078" if stealth else "#787c99")
-                t.append(f"@{target_u}", style="#8b949e" if stealth else "#e0af68")
+                t.append(" 回复 ", style="#687078" if stealth else "#94a3b8")
+                t.append(f"@{target_u}", style="#8b949e" if stealth else "#fbbf24")
             meta_parts: list[str] = []
             if r.ip_location:
                 meta_parts.append(r.ip_location)
             tm = format_time(r.create_at)
             if tm:
                 meta_parts.append(tm)
-            meta_parts.append(f"up:{r.up}" if stealth else f"赞 {r.up}")
-            t.append(f"  [{' · '.join(meta_parts)}]\n", style="#687078" if stealth else "#787c99")
+            meta_parts.append(f"up:{r.up}" if stealth else f"👍{r.up}")
+            t.append(f"  [{' · '.join(meta_parts)}]\n", style="#687078" if stealth else "#94a3b8")
             r_text = strip_emojis(r.text) if stealth else r.text
-            t.append(r_text or "[图片]", style="#b0b8c0" if stealth else "#c0caf5")
+            t.append(r_text or "[图片]", style="#b0b8c0" if stealth else "#f1f5f9")
             if r.imgs:
                 t.append(
-                    f"  [img x{len(r.imgs)}]" if stealth else f"  [图 x{len(r.imgs)}]",
-                    style="#687078" if stealth else "#7dcfff",
+                    f"  [img x{len(r.imgs)}]" if stealth else f"  [🖼 x{len(r.imgs)}]",
+                    style="#687078" if stealth else "#c084fc",
                 )
             options.append(Option(t))
 
@@ -465,13 +465,13 @@ class ImagePreviewModal(ModalScreen[None]):
         box = self.query_one("#img-preview-box", Static)
         stealth = _is_stealth(self)
         if not self.images:
-            title_lbl.update("preview" if stealth else "❖ 图片预览")
+            title_lbl.update("preview" if stealth else "🖼 图片预览")
             box.update("暂无可预览的图片")
             return
 
         total = len(self.images)
         url = self.images[self.index]
-        title_lbl.update(f"img ({self.index + 1}/{total})" if stealth else f"❖ 图片预览 ({self.index + 1}/{total})")
+        title_lbl.update(f"img ({self.index + 1}/{total})" if stealth else f"🖼 图片预览 ({self.index + 1}/{total})")
         box.update("正在下载并解码图片...")
 
         try:
@@ -543,7 +543,7 @@ class CommentModal(ModalScreen[dict[str, Any] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="comment-dialog"):
-            yield Static("发表评论" if _is_stealth(self) else "❖ 发表评论", id="comment-title")
+            yield Static("发表评论" if _is_stealth(self) else "💬 发表评论", id="comment-title")
             yield Static(self.target_label, id="comment-target")
             yield Input(placeholder="输入评论内容，按 Enter 发送（支持 [cube_滑稽] 等表情）...", id="comment-input")
             yield Static("Enter: 发送  |  Esc: 取消", id="comment-status")
@@ -595,7 +595,7 @@ class NewPostModal(ModalScreen[dict[str, Any] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="newpost-dialog"):
-            yield Static("new-post (Ctrl+S submit / Esc cancel)" if _is_stealth(self) else "❖ 发布新帖 (Ctrl+S 提交 / Esc 取消)", id="newpost-title")
+            yield Static("new-post (Ctrl+S submit / Esc cancel)" if _is_stealth(self) else "📝 发布新帖 (Ctrl+S 提交 / Esc 取消)", id="newpost-title")
             yield Input(value=self.default_topic, placeholder="目标板块名或 topic_id（默认: 盒友杂谈）", id="post-topic-input")
             yield Input(placeholder="输入帖子标题...", id="post-title-input")
             yield Input(placeholder="可选：附加图片本地路径或 URL，多张用英文逗号分隔...", id="post-images-input")
