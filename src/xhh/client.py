@@ -15,7 +15,7 @@ import httpx
 from PIL import Image
 
 from xhh.config import AppConfig, SessionData
-from xhh.hkey import generate_hkey_params
+from xhh.hkey import compute_rnd_v16, generate_hkey_params
 from xhh.models import (
     CommentReply,
     CommentThread,
@@ -124,14 +124,19 @@ class HeyboxClient:
         path: str,
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
+        use_rnd: bool = False,
     ) -> tuple[dict[str, Any], httpx.Response]:
         query = generate_hkey_params(path)
         if self.session.heybox_id:
             query.setdefault("heybox_id", self.session.heybox_id)
         if params:
             for k, v in params.items():
-                if v is not None:
+                if v is None:
+                    query.pop(k, None)
+                else:
                     query[k] = v
+        if use_rnd:
+            query["_rnd"] = compute_rnd_v16(path, query["_time"], str(query["nonce"]))
 
         resp = await self._client.request(method, path, params=query, data=data)
         resp.raise_for_status()
@@ -149,8 +154,9 @@ class HeyboxClient:
         path: str,
         data: dict[str, Any],
         params: dict[str, Any] | None = None,
+        use_rnd: bool = False,
     ) -> dict[str, Any]:
-        payload, _ = await self._request("POST", path, params=params, data=data)
+        payload, _ = await self._request("POST", path, params=params, data=data, use_rnd=use_rnd)
         return payload
 
     def _update_session_from_login_result(
@@ -975,13 +981,20 @@ class HeyboxClient:
         tid = str(topic_id or "7214").strip()
         link_tag = "28" if tid == "58144" else "27"
         words_count = str(max(1, (len(clean_title) + len(clean_content)) // 2))
+        device_id = hashlib.md5(f"xhh-web:{self.session.heybox_id}".encode("utf-8")).hexdigest()
 
         payload = await self._post(
             "/bbs/app/api/link/post",
+            params={
+                "x_app": "heybox_website",
+                "x_client_type": "weboutapp",
+                "web_version": "3.0",
+                "device_id": device_id,
+                "x_client_version": None,
+            },
             data={
-                "heybox_id": self.session.heybox_id,
                 "title": clean_title,
-                "text": json.dumps(blocks, ensure_ascii=False),
+                "text": json.dumps(blocks, ensure_ascii=False, separators=(",", ":")),
                 "desc": clean_content[:100],
                 "words_count": words_count,
                 "topic_ids": tid,
@@ -991,9 +1004,9 @@ class HeyboxClient:
                 "original": "1",
                 "declaration": "0",
                 "schedule_ts": "0",
-                "draft": "0",
                 "hashtags": "[]",
             },
+            use_rnd=True,
         )
         st = str(payload.get("status") or "")
         if st in ("login", "relogin"):

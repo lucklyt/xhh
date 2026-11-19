@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
+import os
 import random
 import time
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 CHARSET = "AB45STUVWZEFGJ6CH01D237IXYPQRKLMN89"
 WEB_VERSION = "999.0.4"
+RND_V16_KEY_B64 = "HFFSTsqmvG3uGxPNXDQW+1VARfqgG4nT6LS1PX7F8NQ="
+RND_V16_AAD = b"heybox-rnd:v16"
 
 
 def _r3(val: int) -> int:
@@ -98,3 +105,27 @@ def generate_hkey_params(path: str, timestamp: int | None = None) -> dict[str, s
         "_time": t,
         "nonce": nonce,
     }
+
+
+def compute_rnd_v16(
+    path: str,
+    timestamp: int | str,
+    nonce: str,
+    *,
+    iv: bytes | None = None,
+) -> str:
+    """生成小黑盒 Web 端 v16 _rnd (AES-256-GCM) 请求签名."""
+    segments = [seg for seg in path.split("/") if seg]
+    norm_path = f"/{'/'.join(segments)}/" if segments else "/"
+    key = base64.b64decode(RND_V16_KEY_B64)
+    nonce_iv = iv if iv is not None else os.urandom(12)
+    if len(nonce_iv) != 12:
+        raise ValueError("RND16 IV 长度必须为 12 字节")
+    plaintext = json.dumps(
+        [str(timestamp), str(nonce), norm_path],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    encrypted = AESGCM(key).encrypt(nonce_iv, plaintext, RND_V16_AAD)
+    token = base64.urlsafe_b64encode(nonce_iv + encrypted).decode("ascii").rstrip("=")
+    return f"16:{token}"

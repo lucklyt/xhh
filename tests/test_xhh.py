@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PIL import Image
 from textual.widgets import ContentSwitcher, OptionList, Static
 
 from xhh.cli import main as cli_main
 from xhh.client import HeyboxAPIError, HeyboxClient
 from xhh.config import AppConfig, SessionData
-from xhh.hkey import compute_hkey, generate_hkey_params
+from xhh.hkey import RND_V16_AAD, RND_V16_KEY_B64, compute_hkey, compute_rnd_v16, generate_hkey_params
 from xhh.image import render_image_bytes_rich
 from xhh.models import (
     CommentReply,
@@ -64,6 +66,25 @@ def test_hkey_computation_and_params() -> None:
     assert params["version"] == "999.0.4"
     assert len(str(params["nonce"])) == 32
     assert len(str(params["hkey"])) == 7
+
+    rnd = compute_rnd_v16(
+        "/bbs/app/api/link/post",
+        1700000000,
+        "0123456789ABCDEF0123456789ABCDEF",
+        iv=b"\x01" * 12,
+    )
+    assert rnd.startswith("16:")
+    b64_part = rnd[3:]
+    padded = b64_part + "=" * (-len(b64_part) % 4)
+    raw_token = base64.urlsafe_b64decode(padded)
+    decrypted = AESGCM(base64.b64decode(RND_V16_KEY_B64)).decrypt(
+        raw_token[:12], raw_token[12:], RND_V16_AAD
+    )
+    assert json.loads(decrypted.decode("utf-8")) == [
+        "1700000000",
+        "0123456789ABCDEF0123456789ABCDEF",
+        "/bbs/app/api/link/post/",
+    ]
 
 
 def test_qr_rendering() -> None:
@@ -130,13 +151,16 @@ def test_client_create_comment_and_post(tmp_path: Path, monkeypatch: pytest.Monk
 
         # 2. 已登录时校验表单、四步 COS 图床上传与返回解析
         authed = HeyboxClient(session=SessionData(heybox_id="1001", pkey="pk_test", nickname="tester"))
-        captured: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = []
+        captured: list[tuple[str, dict[str, Any], dict[str, Any] | None, bool]] = []
         cos_puts: list[tuple[str, dict[str, str], bytes]] = []
 
         async def _fake_post(
-            path: str, data: dict[str, Any], params: dict[str, Any] | None = None
+            path: str,
+            data: dict[str, Any],
+            params: dict[str, Any] | None = None,
+            use_rnd: bool = False,
         ) -> dict[str, Any]:
-            captured.append((path, data, params))
+            captured.append((path, data, params, use_rnd))
             if path == "/bbs/app/comment/create":
                 return {"status": "ok", "msg": "评论成功", "result": {"comment": [{"commentid": 777}]}}
             if path == "/bbs/app/api/qcloud/cos/upload/info/v2":
@@ -204,9 +228,15 @@ def test_client_create_comment_and_post(tmp_path: Path, monkeypatch: pytest.Monk
 
             post_entry = [c for c in captured if c[0] == "/bbs/app/api/link/post"][0]
             assert post_entry[1]["topic_ids"] == "43"
-            assert post_entry[1]["heybox_id"] == "1001"
+            assert "draft" not in post_entry[1]
             assert post_entry[1]["schedule_ts"] == "0"
-            assert post_entry[1]["draft"] == "0"
+            assert post_entry[2] is not None
+            assert post_entry[2]["x_app"] == "heybox_website"
+            assert post_entry[2]["x_client_type"] == "weboutapp"
+            assert post_entry[2]["web_version"] == "3.0"
+            assert post_entry[2]["x_client_version"] is None
+            assert len(str(post_entry[2]["device_id"])) == 32
+            assert post_entry[3] is True
             assert json.loads(post_entry[1]["text"]) == [
                 {"type": "text", "text": "测试正文内容"},
                 {
