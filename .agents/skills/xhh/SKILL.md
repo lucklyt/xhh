@@ -28,13 +28,19 @@ else
 fi
 ```
 
-If `xhh` is not installed yet, install it once (creates an isolated virtual environment at `~/.local/share/xhh` and symlinks `~/.local/bin/xhh`):
+If `xhh` is not installed yet, install it once (creates an isolated virtual environment and symlinks/shims `xhh` into user PATH):
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/lucklyt/xhh/main/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/lucklyt/xhh/main/install.ps1 | iex
 ```
 
-Or install via `uv`: `uv tool install git+https://github.com/lucklyt/xhh.git`.
+Or install via `pipx` / `uv`:
+- `pipx install git+https://github.com/lucklyt/xhh.git`
+- `uv tool install git+https://github.com/lucklyt/xhh.git`
 
 ## 2. Operating Rules for Agents
 

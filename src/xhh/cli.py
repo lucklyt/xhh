@@ -21,6 +21,18 @@ from xhh.config import SessionData
 from xhh.models import PostSummary, format_count, format_time, parse_floor_range
 from xhh.qr import render_qr_half_blocks, render_qr_rich, save_qr_html
 
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
 console = Console()
 
 COMMENT_SORT_API_MAP: dict[str, str] = {

@@ -15,9 +15,11 @@
 
 ## 一键安装 (推荐)
 
-### 方式 1：安装脚本一键安装（macOS / Linux）
+### 方式 1：一键脚本安装
 
-无需手动管理虚拟环境，直接执行以下命令即可安装到 `~/.local/bin/xhh`：
+#### macOS / Linux (bash)
+
+无需手动管理虚拟环境，直接执行以下命令安装到 `~/.local/bin/xhh`：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lucklyt/xhh/main/install.sh | bash
@@ -29,14 +31,32 @@ curl -fsSL https://raw.githubusercontent.com/lucklyt/xhh/main/install.sh | bash
 curl -fsSL https://raw.githubusercontent.com/lucklyt/xhh/main/install.sh | bash -s -- --uninstall
 ```
 
-### 方式 2：使用 `uv` 或 `pipx` 安装
+#### Windows (PowerShell)
+
+在 PowerShell 中执行以下命令（会自动创建独立虚拟环境并配置用户 PATH）：
+
+```powershell
+irm https://raw.githubusercontent.com/lucklyt/xhh/main/install.ps1 | iex
+```
+
+卸载：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/lucklyt/xhh/main/install.ps1))) -Uninstall
+```
+
+> **Windows 使用提示**：推荐在 **Windows Terminal** 中运行 `xhh`，可获得完整的 24-bit TrueColor 真彩色、悬停看图以及平滑的终端全屏交互体验。
+
+### 方式 2：使用 `pipx` 或 `uv` 安装 (全平台通用)
+
+适用于 Windows / macOS / Linux，只要环境已安装 Python >= 3.9：
 
 ```bash
-# uv
-uv tool install git+https://github.com/lucklyt/xhh.git
-
-# 或 pipx
+# pipx (推荐)
 pipx install git+https://github.com/lucklyt/xhh.git
+
+# 或 uv
+uv tool install git+https://github.com/lucklyt/xhh.git
 ```
 
 ### 方式 3：源码克隆运行
@@ -44,10 +64,15 @@ pipx install git+https://github.com/lucklyt/xhh.git
 ```bash
 git clone https://github.com/lucklyt/xhh.git
 cd xhh
+
+# macOS / Linux
 ./xhh
+
+# Windows (PowerShell 或 CMD)
+.\xhh
 ```
 
-> 提示：安装后直接运行 `xhh` 即可（本文档其余示例若从源码目录运行可使用 `./xhh`）。
+> 提示：安装后直接在任意路径运行 `xhh` 即可。
 
 ## 快速开始
 
