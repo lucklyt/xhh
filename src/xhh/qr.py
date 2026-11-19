@@ -132,7 +132,7 @@ def save_qr_html(data: str) -> Path:
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>小黑盒 CLI 扫码登录</title>
+  <title>小黑盒 TUI 扫码登录</title>
   <style>
     body {{
       margin: 0;

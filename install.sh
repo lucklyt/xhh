@@ -30,7 +30,7 @@ err()  { printf "${C_RED}[✗]${C_RESET} %s\n" "$*" >&2; }
 
 usage() {
   cat <<EOF
-小黑盒社区 CLI (xhh) 安装脚本
+小黑盒社区 TUI (xhh) 安装脚本
 
 用法:
   install.sh              从 GitHub 安装或更新 xhh
@@ -170,7 +170,7 @@ if [ "$MODE" = "local" ]; then
 else
   TMP_DIR="$(mktemp -d)"
   SRC_DIR="$TMP_DIR/xhh-src"
-  info "正在从 GitHub 下载小黑盒 CLI (${REPO_URL})..."
+  info "正在从 GitHub 下载小黑盒 TUI (${REPO_URL})..."
 
   CLONED=0
   if command -v git >/dev/null 2>&1; then
@@ -233,7 +233,7 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
 fi
 
 VER_OUT="$("$BIN_DIR/xhh" --version 2>/dev/null || true)"
-printf "\n${C_BOLD}${C_GREEN}🎉 小黑盒社区 CLI 安装成功！${C_RESET} (%s)\n\n" "${VER_OUT:-xhh}"
+printf "\n${C_BOLD}${C_GREEN}🎉 小黑盒社区 TUI 安装成功！${C_RESET} (%s)\n\n" "${VER_OUT:-xhh}"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   if [ "$PATH_UPDATED" -eq 1 ] && [ -n "$RC_FILE" ]; then

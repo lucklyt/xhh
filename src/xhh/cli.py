@@ -473,7 +473,7 @@ async def _cmd_publish(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="xhh",
-        description="小黑盒社区终端客户端 (支持全屏 TUI、扫码登录、板块浏览、帖子与评论阅读)",
+        description="小黑盒社区终端 TUI 应用（同时支持快捷 CLI 子命令，支持扫码登录、悬停看图、发评论与发帖）",
     )
     parser.add_argument("-V", "--version", action="version", version=f"xhh {__version__}")
     parser.add_argument("--post", dest="direct_post_id", help="不进入界面直接查看指定帖子 link_id")

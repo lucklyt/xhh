@@ -1,4 +1,4 @@
-"""小黑盒 CLI 终端交互界面 (TUI)."""
+"""小黑盒 TUI 终端交互界面."""
 
 from xhh.tui.app import HeyboxApp
 

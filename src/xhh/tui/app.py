@@ -121,10 +121,10 @@ class ImagePill(Static):
 
 
 class HeyboxApp(App[None]):
-    """小黑盒 CLI 终端交互应用."""
+    """小黑盒 TUI 终端交互应用."""
 
     CSS_PATH = Path(__file__).with_name("theme.tcss")
-    TITLE = "小黑盒 CLI"
+    TITLE = "小黑盒 TUI"
 
     BINDINGS = [
         Binding("q", "back_or_quit", "返回/退出"),
@@ -212,7 +212,7 @@ class HeyboxApp(App[None]):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top-bar"):
-            yield Static("📦 小黑盒 CLI", id="top-title")
+            yield Static("📦 小黑盒 TUI", id="top-title")
             yield Static("⚪ 未登录 [l:扫码登录]", id="top-account")
 
         with Horizontal(id="main-body"):
@@ -349,19 +349,19 @@ class HeyboxApp(App[None]):
     def _update_top_title(self) -> None:
         title = self.query_one("#top-title", Static)
         if self._view_mode == "feed":
-            title.update(f"📦 小黑盒 CLI  |  🔥 推荐 (首页) · 第 {self._feed_page} 页")
+            title.update(f"📦 小黑盒 TUI  |  🔥 推荐 (首页) · 第 {self._feed_page} 页")
         elif self._view_mode == "hot":
             name = HOT_TAB_TITLES.get(self._current_hot_tab, "热点榜单")
-            title.update(f"📦 小黑盒 CLI  |  {name} · 第 {self._hot_page} 页")
+            title.update(f"📦 小黑盒 TUI  |  {name} · 第 {self._hot_page} 页")
         elif self._view_mode == "topic" and self._current_topic:
             tab_str = "1.综合 / [2.热点]" if self._topic_is_hot else "[1.综合] / 2.热点"
             sort_label = SORT_MODES[self._topic_sort_idx][1]
             fav_mark = "⭐" if self.app_config.is_favorite(self._current_topic.topic_id) else ""
             title.update(
-                f"📦 小黑盒 CLI  |  🎮 {fav_mark}{self._current_topic.name}  |  {tab_str}  |  {sort_label} · 第 {self._feed_page} 页"
+                f"📦 小黑盒 TUI  |  🎮 {fav_mark}{self._current_topic.name}  |  {tab_str}  |  {sort_label} · 第 {self._feed_page} 页"
             )
         elif self._view_mode == "search_posts":
-            title.update(f"📦 小黑盒 CLI  |  🔍 搜索结果 · 第 {self._feed_page} 页")
+            title.update(f"📦 小黑盒 TUI  |  🔍 搜索结果 · 第 {self._feed_page} 页")
 
     def _rebuild_sidebar(self) -> None:
         sidebar = self.query_one("#sidebar-list", OptionList)

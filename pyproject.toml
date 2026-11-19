@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "xhh-cli"
 version = "0.1.0"
-description = "小黑盒社区终端客户端 (CLI + TUI)"
+description = "小黑盒社区终端应用 (主推沉浸式 TUI，兼备 CLI 命令行能力)"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
