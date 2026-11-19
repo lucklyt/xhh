@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import webbrowser
 from typing import Any
 
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -16,7 +17,7 @@ from textual.widgets.option_list import Option
 from xhh.client import HeyboxClient
 from xhh.config import SessionData
 from xhh.models import CommentReply, CommentThread, format_count, format_time
-from xhh.qr import render_qr_rich
+from xhh.qr import render_qr_rich, save_qr_html
 
 
 class QRLoginModal(ModalScreen[SessionData | None]):
@@ -26,6 +27,8 @@ class QRLoginModal(ModalScreen[SessionData | None]):
         Binding("escape", "close_modal", "关闭"),
         Binding("q", "close_modal", "关闭"),
         Binding("r", "refresh_qr", "刷新二维码"),
+        Binding("m", "toggle_qr_mode", "切换显示模式"),
+        Binding("b", "open_qr_browser", "浏览器打开二维码"),
         Binding("u", "logout_account", "退出当前账号"),
     ]
 
@@ -35,14 +38,20 @@ class QRLoginModal(ModalScreen[SessionData | None]):
         self._stop_polling = False
         self._poll_task: asyncio.Task[None] | None = None
         self._logged_in_session: SessionData | None = None
+        self._current_qr_url: str = ""
+        self._compact_qr: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="qr-dialog"):
             yield Static("📱 小黑盒 App 扫码登录", id="qr-title")
             yield Static("", id="qr-account-banner")
-            yield Static("正在生成登录二维码...", id="qr-box")
+            with VerticalScroll(id="qr-scroll"):
+                yield Static("正在生成登录二维码...", id="qr-box")
             yield Static("⏳ 初始化中...", id="qr-status")
-            yield Static("r: 刷新二维码  |  u: 退出当前账号  |  Esc/q: 关闭", id="qr-hint")
+            yield Static(
+                "b:浏览器打开高清码  |  m:切换紧凑模式  |  r:刷新  |  u:退出账号  |  Esc:关闭",
+                id="qr-hint",
+            )
 
     def on_mount(self) -> None:
         self._refresh_banner()
@@ -80,8 +89,13 @@ class QRLoginModal(ModalScreen[SessionData | None]):
             status_lbl.update(f"❌ {exc}（按 r 重试）")
             return
 
-        qr_box.update(render_qr_rich(qr_info["qr_url"], border=2))
-        status_lbl.update("⏳ 等待小黑盒 App 扫码...")
+        self._current_qr_url = qr_info["qr_url"]
+        qr_box.update(render_qr_rich(self._current_qr_url, border=1, compact=self._compact_qr))
+        qr_scroll = self.query_one("#qr-scroll", VerticalScroll)
+        if not self._compact_qr and self.app.size.height < 42:
+            status_lbl.update("⏳ 等待扫码（窗口较矮，可按 m 切紧凑码 / b 浏览器打开 / 拉高窗口）")
+        else:
+            status_lbl.update("⏳ 等待小黑盒 App 扫码...（若无法识别可按 b 用浏览器打开）")
 
         qr_token = qr_info["qr_token"]
         while not self._stop_polling:
@@ -119,6 +133,19 @@ class QRLoginModal(ModalScreen[SessionData | None]):
 
     def action_refresh_qr(self) -> None:
         self._start_qr_flow()
+
+    def action_toggle_qr_mode(self) -> None:
+        self._compact_qr = not self._compact_qr
+        if self._current_qr_url:
+            qr_box = self.query_one("#qr-box", Static)
+            qr_box.update(render_qr_rich(self._current_qr_url, border=1, compact=self._compact_qr))
+
+    def action_open_qr_browser(self) -> None:
+        if not self._current_qr_url:
+            return
+        html_path = save_qr_html(self._current_qr_url)
+        webbrowser.open(html_path.as_uri())
+        self.query_one("#qr-status", Static).update(f"🌐 已在浏览器打开高清二维码，请扫码确认...")
 
     async def action_logout_account(self) -> None:
         if not self.client.session.is_logged_in:

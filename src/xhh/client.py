@@ -11,6 +11,7 @@ from xhh.config import AppConfig, SessionData
 from xhh.hkey import generate_hkey_params
 from xhh.models import (
     CommentReply,
+    CommentThread,
     HotRankItem,
     PostDetail,
     PostSummary,
@@ -434,12 +435,138 @@ class HeyboxClient:
             "sort_filter": sort_filter,
         }
         payload = await self._get("/bbs/app/link/tree", params)
-        if payload.get("status") != "ok":
-            raise HeyboxAPIError(payload.get("msg") or "获取帖子详情失败", status=str(payload.get("status")), raw=payload)
+        st = str(payload.get("status") or "")
+        if st == "show_captcha":
+            raise HeyboxAPIError(
+                "触发小黑盒安全校验 (show_captcha)：未登录高频请求帖子详情会受限，建议先执行 `xhh login` 扫码登录或稍后重试",
+                status="show_captcha",
+                raw=payload,
+            )
+        if st != "ok":
+            raise HeyboxAPIError(payload.get("msg") or "获取帖子详情失败", status=st, raw=payload)
         res = payload.get("result") or {}
         if not res.get("link"):
             raise HeyboxAPIError("帖子不存在或已删除", raw=payload)
         return PostDetail.from_api(res, fallback_imgs=fallback_imgs)
+
+    async def get_post_detail_by_floors(
+        self,
+        link_id: int | str,
+        floor_range: tuple[int, int | None],
+        owner_only: bool = False,
+        sort_filter: str = "time_aes",
+        max_pages: int = 10,
+    ) -> PostDetail:
+        """获取指定楼层范围 [start, end] 的帖子详情与过滤后评论."""
+        start, end = floor_range
+        limit = 20
+        base_detail = await self.get_post_detail(
+            link_id=link_id,
+            page=1,
+            limit=limit,
+            owner_only=owner_only,
+            sort_filter=sort_filter,
+        )
+
+        collected: dict[str, CommentThread] = {}
+        visited_pages: set[int] = {1}
+
+        def _record(threads: list[CommentThread]) -> tuple[int, int]:
+            fls: list[int] = []
+            for th in threads:
+                cid = th.root.commentid or f"floor:{th.root.floor_num}:{th.root.username}"
+                collected[cid] = th
+                if th.root.floor_num > 0:
+                    fls.append(th.root.floor_num)
+            return (min(fls), max(fls)) if fls else (0, 0)
+
+        _, max_floor = _record(base_detail.comments)
+        total_pages = max(1, base_detail.total_page)
+        pages_fetched = 1
+
+        if total_pages > 1 and max_pages > 1:
+            if sort_filter == "time_aes":
+                need_more = end is None or max_floor < end
+                if need_more:
+                    if start > 1 and max_floor < start:
+                        probe = min(total_pages, max(2, (start - 1) // limit + 1))
+                        while probe >= 2 and pages_fetched < max_pages:
+                            if probe in visited_pages:
+                                break
+                            visited_pages.add(probe)
+                            d = await self.get_post_detail(
+                                link_id=link_id,
+                                page=probe,
+                                limit=limit,
+                                owner_only=owner_only,
+                                sort_filter=sort_filter,
+                            )
+                            pages_fetched += 1
+                            p_min, p_max = _record(d.comments)
+                            if p_max > max_floor:
+                                max_floor = p_max
+                            if p_min <= start or probe == 2:
+                                cur_page = probe
+                                break
+                            probe -= 1
+                        else:
+                            cur_page = probe
+                    else:
+                        cur_page = 1
+
+                    while cur_page < total_pages and pages_fetched < max_pages:
+                        if end is not None and max_floor >= end:
+                            break
+                        cur_page += 1
+                        if cur_page in visited_pages:
+                            continue
+                        visited_pages.add(cur_page)
+                        d = await self.get_post_detail(
+                            link_id=link_id,
+                            page=cur_page,
+                            limit=limit,
+                            owner_only=owner_only,
+                            sort_filter=sort_filter,
+                        )
+                        pages_fetched += 1
+                        _, p_max = _record(d.comments)
+                        if p_max > max_floor:
+                            max_floor = p_max
+                        if not d.comments:
+                            break
+            else:
+                cur_page = 1
+                while cur_page < total_pages and pages_fetched < max_pages:
+                    if end is not None:
+                        matched_cnt = sum(
+                            1 for t in collected.values() if start <= t.root.floor_num <= end
+                        )
+                        if matched_cnt >= (end - start + 1):
+                            break
+                    cur_page += 1
+                    visited_pages.add(cur_page)
+                    d = await self.get_post_detail(
+                        link_id=link_id,
+                        page=cur_page,
+                        limit=limit,
+                        owner_only=owner_only,
+                        sort_filter=sort_filter,
+                    )
+                    pages_fetched += 1
+                    _record(d.comments)
+                    if not d.comments:
+                        break
+
+        filtered = [
+            th
+            for th in collected.values()
+            if th.root.floor_num >= start and (end is None or th.root.floor_num <= end)
+        ]
+        if sort_filter == "time_aes":
+            filtered.sort(key=lambda t: t.root.floor_num)
+
+        base_detail.comments = filtered
+        return base_detail
 
     async def get_sub_comments(
         self,

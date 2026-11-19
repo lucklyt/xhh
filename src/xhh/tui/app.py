@@ -27,10 +27,18 @@ from xhh.models import (
 )
 from xhh.tui.modals import BossScreen, QRLoginModal, SearchModal, SubCommentModal
 
+FEED_PAGE_SIZE = 15
+
 SORT_MODES: list[tuple[str, str]] = [
     ("hot-rank", "智能排序"),
     ("reply", "回复时间"),
     ("create", "最新发布"),
+]
+
+COMMENT_SORT_MODES: list[tuple[str, str]] = [
+    ("hot", "热门"),
+    ("time_aes", "正序"),
+    ("time_desc", "倒序"),
 ]
 
 HOT_TAB_TITLES: dict[str, str] = {
@@ -65,7 +73,7 @@ class HeyboxApp(App[None]):
         Binding("p", "prev_page", "上一页"),
         Binding("r", "refresh_view", "刷新"),
         Binding("o", "toggle_owner_only", "只看楼主"),
-        Binding("c", "toggle_detail_focus", "切评论区"),
+        Binding("c", "toggle_detail_view", "切换正文/评论"),
         Binding("e", "expand_subcomments", "楼中楼"),
         Binding("b", "open_browser", "浏览器打开"),
         Binding("grave_accent", "boss_key", "老板键"),
@@ -86,8 +94,14 @@ class HeyboxApp(App[None]):
         self._current_topic: TopicItem | None = None
         self._topic_is_hot: bool = False
         self._topic_sort_idx: int = 0
-        self._feed_offset: int = 0
-        self._topic_lastval: str = ""
+
+        # 固定分页状态
+        self._feed_page: int = 1
+        self._feed_pages_cache: dict[int, list[PostSummary]] = {}
+        self._recommended_buffer: list[PostSummary] = []
+        self._recommended_api_offset: int = 0
+        self._recommended_api_has_more: bool = True
+        self._topic_lastval_by_page: dict[int, str] = {1: ""}
         self._has_more_feeds: bool = True
 
         self._posts: list[PostSummary] = []
@@ -97,8 +111,10 @@ class HeyboxApp(App[None]):
         # 帖子详情状态
         self._current_post_summary: PostSummary | None = None
         self._current_detail: PostDetail | None = None
+        self._detail_tab: str = "body"  # "body" | "comments"
         self._comment_page: int = 1
         self._owner_only: bool = False
+        self._comment_sort_idx: int = 0
         self._detail_threads: list[CommentThread] = []
 
         self._load_task: asyncio.Task[None] | None = None
@@ -119,13 +135,17 @@ class HeyboxApp(App[None]):
 
                 with Vertical(id="detail-pane"):
                     yield Static("", id="detail-header")
-                    with VerticalScroll(id="post-body-scroll"):
-                        yield Static("", id="detail-body")
-                    yield Static("", id="comment-bar")
-                    yield OptionList(id="comment-list")
+                    yield Static("", id="detail-tabbar")
+                    with ContentSwitcher(id="detail-sub-switcher", initial="detail-body-view"):
+                        with Vertical(id="detail-body-view"):
+                            with VerticalScroll(id="post-body-scroll"):
+                                yield Static("", id="detail-body")
+                        with Vertical(id="detail-comments-view"):
+                            yield Static("", id="comment-bar")
+                            yield OptionList(id="comment-list")
 
         yield Static(
-            "j/k:移动  Enter:进入  /:搜板块  l:扫码登录  1/2:综合/热点  s:排序  f:收藏  `:老板键  q:返回/退出",
+            "j/k:移动  Enter:进入  n/p:翻页  c:正文/评论  /:搜板块  l:扫码登录  1/2:综合/热点  `:老板键  q:返回/退出",
             id="status-footer",
         )
 
@@ -146,11 +166,10 @@ class HeyboxApp(App[None]):
         self._load_task = asyncio.create_task(coro)
 
     async def _bootstrap(self) -> None:
-        # 并行验证登录态、加载社区板块列表与首页推荐流
         tasks = [
             self._safe_restore_login(),
             self._load_categories(),
-            self._load_recommended_feeds(reset=True),
+            self._load_recommended_feeds(page=1, reset=True),
         ]
         await asyncio.gather(*tasks)
         self.query_one("#feed-list", OptionList).focus()
@@ -183,7 +202,7 @@ class HeyboxApp(App[None]):
     def _update_top_title(self) -> None:
         title = self.query_one("#top-title", Static)
         if self._view_mode == "feed":
-            title.update("📦 小黑盒 CLI  |  🔥 推荐 (首页)")
+            title.update(f"📦 小黑盒 CLI  |  🔥 推荐 (首页) · 第 {self._feed_page} 页")
         elif self._view_mode == "hot":
             name = HOT_TAB_TITLES.get(self._current_hot_tab, "热点榜单")
             title.update(f"📦 小黑盒 CLI  |  {name}")
@@ -192,7 +211,7 @@ class HeyboxApp(App[None]):
             sort_label = SORT_MODES[self._topic_sort_idx][1]
             fav_mark = "⭐" if self.app_config.is_favorite(self._current_topic.topic_id) else ""
             title.update(
-                f"📦 小黑盒 CLI  |  🎮 {fav_mark}{self._current_topic.name} ({self._current_topic.topic_id})  |  {tab_str}  |  排序: {sort_label}"
+                f"📦 小黑盒 CLI  |  🎮 {fav_mark}{self._current_topic.name} ({self._current_topic.topic_id})  |  {tab_str}  |  排序: {sort_label} · 第 {self._feed_page} 页"
             )
         elif self._view_mode == "search_posts":
             title.update("📦 小黑盒 CLI  |  🔍 搜索结果")
@@ -285,15 +304,18 @@ class HeyboxApp(App[None]):
         feed_list.set_options(options)
         if options and not options[0].disabled:
             feed_list.highlighted = 0
+            feed_list.scroll_home(animate=False)
 
+        page_info = f"第 {self._feed_page} 页 (本页 {len(self._posts)} 条)"
+        nav_hint = "n:下一页" + (" p:上一页" if self._feed_page > 1 else "")
         if status_msg:
             subbar.update(status_msg)
         elif self._view_mode == "topic" and self._current_topic:
             subbar.update(
-                f"板块「{self._current_topic.name}」共 {len(self._posts)} 条 | 1:综合 2:热点 | s:切排序 | f:收藏/取消 | n:下一页"
+                f"板块「{self._current_topic.name}」· {page_info} | 1:综合 2:热点 | s:排序 | f:收藏 | {nav_hint}"
             )
         else:
-            subbar.update(f"共 {len(self._posts)} 条帖子 | Enter:阅读正文与评论 | n:加载下一页 | r:刷新")
+            subbar.update(f"{page_info} | Enter:阅读正文 | {nav_hint} | r:刷新")
 
     def _render_hot_list(self) -> None:
         subbar = self.query_one("#list-subbar", Static)
@@ -317,32 +339,65 @@ class HeyboxApp(App[None]):
         feed_list.set_options(options)
         if options and not options[0].disabled:
             feed_list.highlighted = 0
+            feed_list.scroll_home(animate=False)
         tab_name = HOT_TAB_TITLES.get(self._current_hot_tab, "热榜")
         subbar.update(f"{tab_name} (共 {len(self._hot_items)} 条) | Enter: 直达板块或搜索相关帖子 | r: 刷新")
 
-    async def _load_recommended_feeds(self, reset: bool = True) -> None:
+    async def _load_recommended_feeds(self, page: int = 1, reset: bool = False) -> None:
         self._view_mode = "feed"
         self.query_one("#content-switcher", ContentSwitcher).current = "list-pane"
         if reset:
-            self._feed_offset = 0
+            self._feed_page = 1
+            self._feed_pages_cache.clear()
+            self._recommended_buffer.clear()
+            self._recommended_api_offset = 0
+            self._recommended_api_has_more = True
             self._posts = []
             self.query_one("#list-subbar", Static).update("⏳ 正在加载首页推荐流...")
         else:
-            self.query_one("#list-subbar", Static).update("⏳ 正在加载下一页...")
+            self.query_one("#list-subbar", Static).update(f"⏳ 正在切换到第 {page} 页...")
+
+        if page in self._feed_pages_cache:
+            self._feed_page = page
+            self._posts = self._feed_pages_cache[page]
+            self._has_more_feeds = (page + 1) in self._feed_pages_cache or len(self._recommended_buffer) > page * FEED_PAGE_SIZE or self._recommended_api_has_more
+            self._render_posts_list()
+            return
+
+        need_end = page * FEED_PAGE_SIZE
+        seen_ids = {p.linkid for p in self._recommended_buffer}
 
         try:
-            new_posts = await self.client.get_recommended_feeds(offset=self._feed_offset)
+            while len(self._recommended_buffer) < need_end and self._recommended_api_has_more:
+                batch = await self.client.get_recommended_feeds(offset=self._recommended_api_offset)
+                if not batch:
+                    self._recommended_api_has_more = False
+                    break
+                added = 0
+                for p in batch:
+                    if p.linkid not in seen_ids:
+                        seen_ids.add(p.linkid)
+                        self._recommended_buffer.append(p)
+                        added += 1
+                self._recommended_api_offset += len(batch)
+                if added == 0:
+                    self._recommended_api_has_more = False
+                    break
         except Exception as exc:
             self.query_one("#list-subbar", Static).update(f"❌ 加载失败: {exc} (按 r 重试)")
             return
 
-        if reset:
-            self._posts = new_posts
-        else:
-            existing = {p.linkid for p in self._posts}
-            self._posts.extend(p for p in new_posts if p.linkid not in existing)
-        self._feed_offset += len(new_posts) or 30
-        self._has_more_feeds = len(new_posts) > 0
+        start = (page - 1) * FEED_PAGE_SIZE
+        page_posts = self._recommended_buffer[start : start + FEED_PAGE_SIZE]
+        if not page_posts and page > 1:
+            self._has_more_feeds = False
+            self.query_one("#list-subbar", Static).update(f"已到最后一页 (第 {self._feed_page} 页)")
+            return
+
+        self._feed_page = page
+        self._feed_pages_cache[page] = page_posts
+        self._posts = page_posts
+        self._has_more_feeds = len(self._recommended_buffer) > start + FEED_PAGE_SIZE or self._recommended_api_has_more
         self._render_posts_list()
 
     async def _load_hot_ranking(self, tab_type: str) -> None:
@@ -358,67 +413,117 @@ class HeyboxApp(App[None]):
         self._hot_items = grouped.get(tab_type) or []
         self._render_hot_list()
 
-    async def _load_topic_feeds(self, topic: TopicItem, reset: bool = True) -> None:
+    async def _load_topic_feeds(self, topic: TopicItem, page: int = 1, reset: bool = False) -> None:
         self._view_mode = "topic"
         self._current_topic = topic
         self.query_one("#content-switcher", ContentSwitcher).current = "list-pane"
         if reset:
-            self._feed_offset = 0
-            self._topic_lastval = ""
+            self._feed_page = 1
+            self._feed_pages_cache.clear()
+            self._topic_lastval_by_page = {1: ""}
             self._posts = []
             self.query_one("#list-subbar", Static).update(f"⏳ 正在加载「{topic.name}」...")
         else:
-            self.query_one("#list-subbar", Static).update(f"⏳ 正在加载「{topic.name}」下一页...")
+            self.query_one("#list-subbar", Static).update(f"⏳ 正在加载「{topic.name}」第 {page} 页...")
+
+        if page in self._feed_pages_cache:
+            self._feed_page = page
+            self._posts = self._feed_pages_cache[page]
+            self._has_more_feeds = len(self._posts) > 0
+            self._render_posts_list()
+            return
 
         sort_key = SORT_MODES[self._topic_sort_idx][0]
+        offset = (page - 1) * FEED_PAGE_SIZE
+        lastval = self._topic_lastval_by_page.get(page, "")
         try:
             res = await self.client.get_topic_feeds(
                 topic_id=topic.topic_id,
                 is_hot=self._topic_is_hot,
                 sort_filter=sort_key,
-                offset=self._feed_offset,
-                limit=20,
-                lastval=self._topic_lastval,
+                offset=offset,
+                limit=FEED_PAGE_SIZE,
+                lastval=lastval,
             )
         except Exception as exc:
             self.query_one("#list-subbar", Static).update(f"❌ 加载板块失败: {exc}")
             return
 
-        new_posts: list[PostSummary] = res["posts"]
-        if reset:
-            self._posts = new_posts
-        else:
-            existing = {p.linkid for p in self._posts}
-            self._posts.extend(p for p in new_posts if p.linkid not in existing)
-        self._feed_offset += len(new_posts) or 20
-        self._topic_lastval = res.get("lastval") or ""
-        self._has_more_feeds = bool(res.get("has_more"))
+        page_posts: list[PostSummary] = (res["posts"] or [])[:FEED_PAGE_SIZE]
+        if not page_posts and page > 1:
+            self._has_more_feeds = False
+            self.query_one("#list-subbar", Static).update(f"板块「{topic.name}」已到最后一页 (第 {self._feed_page} 页)")
+            return
+
+        self._feed_page = page
+        self._feed_pages_cache[page] = page_posts
+        self._topic_lastval_by_page[page + 1] = res.get("lastval") or ""
+        self._posts = page_posts
+        self._has_more_feeds = bool(res.get("has_more")) and len(page_posts) > 0
         self._render_posts_list()
+
+    def _update_detail_tabbar(self) -> None:
+        tabbar = self.query_one("#detail-tabbar", Static)
+        detail = self._current_detail
+        cmt_cnt = detail.comment_num if detail else 0
+        total_pg = max(detail.total_page, 1) if detail else 1
+        sort_lbl = COMMENT_SORT_MODES[self._comment_sort_idx][1]
+
+        t = Text()
+        if self._detail_tab == "body":
+            t.append(" [ 📄 正文 ] ", style="bold black on #58a6ff")
+            t.append(f"   💬 评论区 ({cmt_cnt}) ", style="dim")
+            t.append("   |   c:切到评论  j/k:滚动  b:浏览器打开  Esc:返回列表", style="dim")
+        else:
+            t.append("  📄 正文  ", style="dim")
+            t.append(f" [ 💬 评论区 ({cmt_cnt}) · 第 {self._comment_page}/{total_pg} 页 ] ", style="bold black on #f0883e")
+            t.append(f"   |   c:返回正文  s:排序[{sort_lbl}]  o:只看楼主  e:楼中楼  n/p:翻页", style="dim")
+        tabbar.update(t)
+
+    def _switch_detail_tab(self, tab: str) -> None:
+        self._detail_tab = tab
+        sub = self.query_one("#detail-sub-switcher", ContentSwitcher)
+        if tab == "comments":
+            sub.current = "detail-comments-view"
+            self.query_one("#comment-list", OptionList).focus()
+        else:
+            sub.current = "detail-body-view"
+            self.query_one("#post-body-scroll", VerticalScroll).focus()
+        self._update_detail_tabbar()
 
     async def _open_post_detail(
         self,
         link_id: str,
         summary: PostSummary | None = None,
         page: int = 1,
+        reset_tab: bool = True,
     ) -> None:
-        if page == 1:
+        if reset_tab:
             feed_list = self.query_one("#feed-list", OptionList)
             if feed_list.highlighted is not None:
                 self._saved_feed_highlight = feed_list.highlighted
             self._current_post_summary = summary
+            self._detail_tab = "body"
+            self._comment_page = 1
+            self._owner_only = False
+            self._comment_sort_idx = 0
 
         self.query_one("#content-switcher", ContentSwitcher).current = "detail-pane"
         self.query_one("#detail-header", Static).update(f"⏳ 正在加载帖子 #{link_id} ...")
-        self.query_one("#detail-body", Static).update("")
-        self.query_one("#comment-bar", Static).update("加载评论中...")
+        if reset_tab:
+            self.query_one("#detail-body", Static).update("")
+            self._switch_detail_tab("body")
+        self.query_one("#comment-bar", Static).update("⏳ 正在加载评论...")
 
         fallback_imgs = summary.imgs if summary else None
+        cmt_sort = COMMENT_SORT_MODES[self._comment_sort_idx][0]
         try:
             detail = await self.client.get_post_detail(
                 link_id=link_id,
                 page=page,
                 limit=20,
                 owner_only=self._owner_only,
+                sort_filter=cmt_sort,
                 fallback_imgs=fallback_imgs,
             )
         except Exception as exc:
@@ -457,12 +562,14 @@ class HeyboxApp(App[None]):
                 body_text.append(f"  [图{idx}] ", style="bold blue")
                 body_text.append(f"{img_url}\n", style="dim underline")
         self.query_one("#detail-body", Static).update(body_text)
-        self.query_one("#post-body-scroll", VerticalScroll).scroll_home(animate=False)
+        if reset_tab:
+            self.query_one("#post-body-scroll", VerticalScroll).scroll_home(animate=False)
 
         # Comments
         mode_tag = "[只看楼主]" if self._owner_only else "[全部评论]"
+        sort_lbl = COMMENT_SORT_MODES[self._comment_sort_idx][1]
         self.query_one("#comment-bar", Static).update(
-            f"💬 评论区 (第 {detail.total_floor_num and page or page}/{max(detail.total_page, 1)} 页 · {mode_tag}) | o:只看楼主  c:切焦点  e:楼中楼  n/p:翻页  b:浏览器  Esc:返回"
+            f"💬 第 {page}/{max(detail.total_page, 1)} 页 · {mode_tag} · 排序:{sort_lbl} | o:只看楼主  s:切排序  e:楼中楼  n/p:翻页  c:回正文"
         )
 
         cmt_list = self.query_one("#comment-list", OptionList)
@@ -516,7 +623,9 @@ class HeyboxApp(App[None]):
         cmt_list.set_options(cmt_options)
         if cmt_options and not cmt_options[0].disabled:
             cmt_list.highlighted = 0
-        self.query_one("#post-body-scroll", VerticalScroll).focus()
+            cmt_list.scroll_home(animate=False)
+
+        self._switch_detail_tab("body" if reset_tab else self._detail_tab)
 
     # -------------------- 事件响应 --------------------
 
@@ -530,11 +639,11 @@ class HeyboxApp(App[None]):
                 return
             mode = meta["mode"]
             if mode == "feed":
-                self._schedule_load(self._load_recommended_feeds(reset=True))
+                self._schedule_load(self._load_recommended_feeds(page=1, reset=True))
             elif mode == "hot":
                 self._schedule_load(self._load_hot_ranking(meta["tab"]))
             elif mode == "topic":
-                self._schedule_load(self._load_topic_feeds(meta["topic"], reset=True))
+                self._schedule_load(self._load_topic_feeds(meta["topic"], page=1, reset=True))
             self.query_one("#feed-list", OptionList).focus()
             return
 
@@ -544,9 +653,7 @@ class HeyboxApp(App[None]):
                 link_id = parts[1]
                 idx = int(parts[2])
                 summary = self._posts[idx] if 0 <= idx < len(self._posts) else None
-                self._comment_page = 1
-                self._owner_only = False
-                self._schedule_load(self._open_post_detail(link_id, summary=summary, page=1))
+                self._schedule_load(self._open_post_detail(link_id, summary=summary, page=1, reset_tab=True))
             elif opt_id.startswith("hot:"):
                 idx = int(opt_id.split(":")[1])
                 if 0 <= idx < len(self._hot_items):
@@ -562,25 +669,25 @@ class HeyboxApp(App[None]):
                 menu = await self.client.get_topic_menu(appid=item.item_id)
                 topic_raw = menu.get("topic") or {}
                 if topic_raw.get("topic_id"):
-                    await self._load_topic_feeds(TopicItem.from_api(topic_raw), reset=True)
+                    await self._load_topic_feeds(TopicItem.from_api(topic_raw), page=1, reset=True)
                     return
             except Exception:
                 pass
 
         topic = await self.client.resolve_topic(item.title)
         if topic:
-            await self._load_topic_feeds(topic, reset=True)
+            await self._load_topic_feeds(topic, page=1, reset=True)
             return
 
-        # 搜索热词相关帖子
         self.query_one("#list-subbar", Static).update(f"⏳ 正在检索「{item.title}」相关内容...")
         res = await self.client.search(item.title)
         if res.get("posts"):
             self._view_mode = "search_posts"
-            self._posts = res["posts"]
+            self._feed_page = 1
+            self._posts = res["posts"][:FEED_PAGE_SIZE]
             self._render_posts_list(f"热点「{item.title}」相关帖子 (共 {len(self._posts)} 条) | Enter:看帖")
         elif res.get("topics"):
-            await self._load_topic_feeds(res["topics"][0], reset=True)
+            await self._load_topic_feeds(res["topics"][0], page=1, reset=True)
         else:
             tip = "按 l 扫码登录后可搜索该热词全站帖子" if res.get("requires_login") else "未找到直接匹配的帖子"
             self.query_one("#list-subbar", Static).update(f"热点「{item.title}」: {tip}")
@@ -626,19 +733,15 @@ class HeyboxApp(App[None]):
 
     def action_focus_content(self) -> None:
         if self._in_detail_view():
-            self.query_one("#comment-list", OptionList).focus()
+            self._switch_detail_tab("comments" if self._detail_tab == "body" else "body")
         else:
             self.query_one("#feed-list", OptionList).focus()
 
-    def action_toggle_detail_focus(self) -> None:
+    def action_toggle_detail_view(self) -> None:
         if not self._in_detail_view():
             return
-        body = self.query_one("#post-body-scroll", VerticalScroll)
-        cmts = self.query_one("#comment-list", OptionList)
-        if self.focused is cmts:
-            body.focus()
-        else:
-            cmts.focus()
+        next_tab = "comments" if self._detail_tab == "body" else "body"
+        self._switch_detail_tab(next_tab)
 
     def action_open_login(self) -> None:
         def _after_login(res: SessionData | None) -> None:
@@ -653,30 +756,41 @@ class HeyboxApp(App[None]):
             if not res:
                 return
             if res["type"] == "topic":
-                self._schedule_load(self._load_topic_feeds(res["topic"], reset=True))
+                self._schedule_load(self._load_topic_feeds(res["topic"], page=1, reset=True))
                 self.query_one("#feed-list", OptionList).focus()
             elif res["type"] == "post":
                 post: PostSummary = res["post"]
-                self._comment_page = 1
-                self._owner_only = False
-                self._schedule_load(self._open_post_detail(post.linkid, summary=post, page=1))
+                self._schedule_load(self._open_post_detail(post.linkid, summary=post, page=1, reset_tab=True))
 
         self.push_screen(SearchModal(self.client), _after_search)
 
     def action_filter_all(self) -> None:
         if not self._in_detail_view() and self._view_mode == "topic" and self._current_topic:
             self._topic_is_hot = False
-            self._schedule_load(self._load_topic_feeds(self._current_topic, reset=True))
+            self._schedule_load(self._load_topic_feeds(self._current_topic, page=1, reset=True))
 
     def action_filter_hot(self) -> None:
         if not self._in_detail_view() and self._view_mode == "topic" and self._current_topic:
             self._topic_is_hot = True
-            self._schedule_load(self._load_topic_feeds(self._current_topic, reset=True))
+            self._schedule_load(self._load_topic_feeds(self._current_topic, page=1, reset=True))
 
     def action_cycle_sort(self) -> None:
-        if not self._in_detail_view() and self._view_mode == "topic" and self._current_topic:
+        if self._in_detail_view() and self._current_detail:
+            self._comment_sort_idx = (self._comment_sort_idx + 1) % len(COMMENT_SORT_MODES)
+            self._detail_tab = "comments"
+            self._schedule_load(
+                self._open_post_detail(
+                    self._current_detail.linkid,
+                    summary=self._current_post_summary,
+                    page=1,
+                    reset_tab=False,
+                )
+            )
+            return
+
+        if self._view_mode == "topic" and self._current_topic:
             self._topic_sort_idx = (self._topic_sort_idx + 1) % len(SORT_MODES)
-            self._schedule_load(self._load_topic_feeds(self._current_topic, reset=True))
+            self._schedule_load(self._load_topic_feeds(self._current_topic, page=1, reset=True))
 
     def action_toggle_favorite(self) -> None:
         if not self._in_detail_view() and self._view_mode == "topic" and self._current_topic:
@@ -690,12 +804,16 @@ class HeyboxApp(App[None]):
 
     def action_next_page(self) -> None:
         if self._in_detail_view() and self._current_detail:
+            if self._detail_tab != "comments":
+                self._switch_detail_tab("comments")
+                return
             if self._current_detail.has_more_floors or self._comment_page < self._current_detail.total_page:
                 self._schedule_load(
                     self._open_post_detail(
                         self._current_detail.linkid,
                         summary=self._current_post_summary,
                         page=self._comment_page + 1,
+                        reset_tab=False,
                     )
                 )
             return
@@ -703,19 +821,29 @@ class HeyboxApp(App[None]):
         if not self._has_more_feeds:
             return
         if self._view_mode == "feed":
-            self._schedule_load(self._load_recommended_feeds(reset=False))
+            self._schedule_load(self._load_recommended_feeds(page=self._feed_page + 1, reset=False))
         elif self._view_mode == "topic" and self._current_topic:
-            self._schedule_load(self._load_topic_feeds(self._current_topic, reset=False))
+            self._schedule_load(self._load_topic_feeds(self._current_topic, page=self._feed_page + 1, reset=False))
 
     def action_prev_page(self) -> None:
-        if self._in_detail_view() and self._current_detail and self._comment_page > 1:
-            self._schedule_load(
-                self._open_post_detail(
-                    self._current_detail.linkid,
-                    summary=self._current_post_summary,
-                    page=self._comment_page - 1,
+        if self._in_detail_view() and self._current_detail:
+            if self._detail_tab == "comments" and self._comment_page > 1:
+                self._schedule_load(
+                    self._open_post_detail(
+                        self._current_detail.linkid,
+                        summary=self._current_post_summary,
+                        page=self._comment_page - 1,
+                        reset_tab=False,
+                    )
                 )
-            )
+            return
+
+        if self._feed_page <= 1:
+            return
+        if self._view_mode == "feed":
+            self._schedule_load(self._load_recommended_feeds(page=self._feed_page - 1, reset=False))
+        elif self._view_mode == "topic" and self._current_topic:
+            self._schedule_load(self._load_topic_feeds(self._current_topic, page=self._feed_page - 1, reset=False))
 
     def action_refresh_view(self) -> None:
         if self._in_detail_view() and self._current_detail:
@@ -724,28 +852,34 @@ class HeyboxApp(App[None]):
                     self._current_detail.linkid,
                     summary=self._current_post_summary,
                     page=self._comment_page,
+                    reset_tab=False,
                 )
             )
         elif self._view_mode == "feed":
-            self._schedule_load(self._load_recommended_feeds(reset=True))
+            self._schedule_load(self._load_recommended_feeds(page=1, reset=True))
         elif self._view_mode == "hot":
             self._schedule_load(self._load_hot_ranking(self._current_hot_tab))
         elif self._view_mode == "topic" and self._current_topic:
-            self._schedule_load(self._load_topic_feeds(self._current_topic, reset=True))
+            self._schedule_load(self._load_topic_feeds(self._current_topic, page=1, reset=True))
 
     def action_toggle_owner_only(self) -> None:
         if self._in_detail_view() and self._current_detail:
             self._owner_only = not self._owner_only
+            self._detail_tab = "comments"
             self._schedule_load(
                 self._open_post_detail(
                     self._current_detail.linkid,
                     summary=self._current_post_summary,
                     page=1,
+                    reset_tab=False,
                 )
             )
 
     def action_expand_subcomments(self) -> None:
         if not self._in_detail_view() or not self._current_detail:
+            return
+        if self._detail_tab != "comments":
+            self._switch_detail_tab("comments")
             return
         cmt_list = self.query_one("#comment-list", OptionList)
         hl = cmt_list.highlighted

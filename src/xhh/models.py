@@ -241,6 +241,42 @@ def format_post_content(
     return body, images
 
 
+def parse_floor_range(spec: str) -> tuple[int, int | None]:
+    """解析楼层范围字符串，如 '1-10'、'8'、'15-'、'-20'."""
+    raw = spec.strip()
+    if not raw:
+        raise ValueError("楼层范围不能为空")
+
+    if "-" not in raw:
+        if not raw.isdigit() or int(raw) < 1:
+            raise ValueError(f"无效的楼层号: {spec!r}（应为正整数或如 1-10 的区间）")
+        val = int(raw)
+        return val, val
+
+    parts = raw.split("-")
+    if len(parts) != 2:
+        raise ValueError(f"无效的楼层范围: {spec!r}（示例: 1-10、5、15-）")
+
+    left, right = parts[0].strip(), parts[1].strip()
+    if not left and not right:
+        raise ValueError(f"无效的楼层范围: {spec!r}")
+
+    start = int(left) if left else 1
+    if left and (not left.isdigit() or start < 1):
+        raise ValueError(f"起始楼层必须为正整数: {spec!r}")
+
+    if right:
+        if not right.isdigit() or int(right) < 1:
+            raise ValueError(f"结束楼层必须为正整数: {spec!r}")
+        end: int | None = int(right)
+        if end < start:
+            raise ValueError(f"结束楼层不能小于起始楼层: {spec!r}")
+    else:
+        end = None
+
+    return start, end
+
+
 @dataclass
 class TopicItem:
     """社区 / 游戏板块."""
@@ -250,6 +286,15 @@ class TopicItem:
     app_id: int | str = -1
     hot_value: int = 0
     pic_url: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "topic_id": self.topic_id,
+            "name": self.name,
+            "app_id": self.app_id,
+            "hot_value": self.hot_value,
+            "pic_url": self.pic_url,
+        }
 
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> TopicItem:
@@ -319,6 +364,26 @@ class PostSummary:
             raw=data,
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "linkid": self.linkid,
+            "title": self.title,
+            "description": self.description,
+            "author": self.author,
+            "author_level": self.author_level,
+            "topic_name": self.topic_name,
+            "topic_id": self.topic_id,
+            "up": self.up,
+            "award_num": self.award_num,
+            "comment_num": self.comment_num,
+            "create_at": self.create_at,
+            "create_str": self.create_str,
+            "image_count": self.image_count,
+            "has_video": self.has_video,
+            "is_hot_post": self.is_hot_post,
+            "imgs": self.imgs,
+        }
+
 
 @dataclass
 class CommentReply:
@@ -362,6 +427,24 @@ class CommentReply:
             imgs=imgs,
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "commentid": self.commentid,
+            "floor_num": self.floor_num,
+            "username": self.username,
+            "user_level": self.user_level,
+            "ip_location": self.ip_location,
+            "text": self.text,
+            "up": self.up,
+            "create_at": self.create_at,
+            "child_num": self.child_num,
+            "is_cy": self.is_cy,
+            "is_top": self.is_top,
+            "is_link_owner": self.is_link_owner,
+            "reply_to_user": self.reply_to_user,
+            "imgs": self.imgs,
+        }
+
 
 @dataclass
 class CommentThread:
@@ -370,6 +453,12 @@ class CommentThread:
     root: CommentReply
     children: list[CommentReply] = field(default_factory=list)
     has_more: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        data = self.root.to_dict()
+        data["has_more"] = self.has_more
+        data["replies"] = [c.to_dict() for c in self.children]
+        return data
 
     @classmethod
     def from_api_group(cls, group: dict[str, Any]) -> CommentThread | None:
@@ -448,6 +537,33 @@ class PostDetail:
             total_floor_num=int(result.get("total_floor_num") or 0),
         )
 
+    def to_dict(self, comment_filter: dict[str, Any] | None = None) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "linkid": self.linkid,
+            "title": self.title,
+            "author": self.author,
+            "author_level": self.author_level,
+            "ip_location": self.ip_location,
+            "topic_name": self.topic_name,
+            "topic_id": self.topic_id,
+            "create_at": self.create_at,
+            "up": self.up,
+            "award_num": self.award_num,
+            "comment_num": self.comment_num,
+            "favour_count": self.favour_count,
+            "has_video": self.has_video,
+            "share_url": self.share_url,
+            "body": self.body,
+            "images": self.images,
+            "total_page": self.total_page,
+            "total_floor_num": self.total_floor_num,
+            "has_more_floors": self.has_more_floors,
+            "comments": [c.to_dict() for c in self.comments],
+        }
+        if comment_filter is not None:
+            out["comment_filter"] = comment_filter
+        return out
+
 
 @dataclass
 class HotRankItem:
@@ -460,3 +576,13 @@ class HotRankItem:
     item_type: str = ""
     item_id: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rank": self.rank,
+            "title": self.title,
+            "tab_type": self.tab_type,
+            "tag": self.tag,
+            "item_type": self.item_type,
+            "item_id": self.item_id,
+        }
