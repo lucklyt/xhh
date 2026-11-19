@@ -209,6 +209,18 @@ Map keyed by tab (`news`, `fusion`, `gamev2`):
 }
 ```
 
+### `xhh edit <link_id> ... --json` (alias: `xhh update`)
+
+```json
+{
+  "status": "ok",
+  "link_id": "197309230",
+  "share_url": "https://www.xiaoheihe.cn/app/bbs/link/197309230",
+  "msg": "修改成功",
+  "result": {}
+}
+```
+
 ## Errors & Configuration
 
 - **JSON error shape**: `{"error": "<message>"}` with non-zero exit code.

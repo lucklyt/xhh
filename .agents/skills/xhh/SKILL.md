@@ -5,7 +5,7 @@ description: >-
   in headless JSON mode. Activate when the user asks to browse 小黑盒 recommended feeds,
   hot rankings (热议/热搜/热门游戏), or game boards/topics; read a post body and
   specific comment floors; search posts or communities; check or trigger QR code login;
-  publish image-text posts; or post comments and nested replies (楼中楼).
+  publish or edit/update image-text posts; or post comments and nested replies (楼中楼).
 ---
 
 # XiaoHeiHe (`xhh`) Agent Skill
