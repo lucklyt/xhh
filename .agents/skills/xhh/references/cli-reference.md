@@ -18,6 +18,7 @@ All subcommands listed below match `src/xhh/cli.py` and `src/xhh/models.py`.
 | `xhh search` | — | `query`, `-n/--limit INT` (10), `-j/--json` | Matching game boards + site-wide posts (`requires_login: true` when logged out). |
 | `xhh comment` | — | `link_id`, `text`, `--root-id ID` (`-1`), `--reply-id ID` (`-1`), `-j/--json` | Requires login. Top-level comment uses defaults `-1`; reply sets `--root-id` & `--reply-id`. |
 | `xhh publish` | `new-post` | `-t/--title STR` (req, <=30 chars), `-c/--content STR` (req), `--topic STR` (`盒友杂谈`), `-i/--image PATH_OR_URL` (repeatable), `-j/--json` | Requires login. Local images upload automatically via Tencent COS 4-step pipeline. |
+| `xhh edit` | `update` | `link_id`, `-t/--title`, `-c/--content`, `--content-file PATH`, `-i/--image` (repeatable, replaces all images), `--topic`, `-j/--json` | Requires login and ownership. Unspecified fields keep original values; at least one change required. Output: `{status, link_id, share_url, msg, result}`. |
 
 ## JSON Output Shapes
 

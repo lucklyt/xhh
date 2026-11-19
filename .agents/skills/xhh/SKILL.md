@@ -154,6 +154,16 @@ Read back with `"$XHH_BIN" post <link_id> --sort desc --page 1 --json` to confir
 
 3. Verify the reply appears under the root floor via `"$XHH_BIN" post <link_id> --floors <floor> --json`.
 
+### Workflow G: Edit Your Own Post
+
+```bash
+"$XHH_BIN" edit <link_id> -c "新正文" --json            # title/images/topic kept
+"$XHH_BIN" edit <link_id> --content-file ./body.txt -t "新标题" --json
+"$XHH_BIN" edit <link_id> -i ./new1.png -i ./new2.png --json   # replaces ALL images
+```
+
+Only posts owned by the logged-in account can be edited. Read back with `"$XHH_BIN" post <link_id> --json`. Note: the server rewrites bare domains/filenames in post text (e.g. `install.sh` -> `install。sh`, and strips `https://` from non-whitelisted domains); put such commands in a GitHub link instead of the post body, and never try to evade the filter.
+
 ## 4. Reference
 
 - See [CLI & JSON Schema Reference](./references/cli-reference.md) for every flag, exact JSON payload shape, and troubleshooting codes.

@@ -964,6 +964,14 @@ class HeyboxClient:
             raise ValueError("帖子正文不能为空")
 
         blocks: list[dict[str, Any]] = [{"type": "text", "text": clean_content}]
+        blocks.extend(await self._build_img_blocks(imgs))
+        return await self._submit_post_form(clean_title, clean_content, blocks, topic_id)
+
+    async def _build_img_blocks(
+        self, imgs: Sequence[str | Path | dict[str, Any]] | None
+    ) -> list[dict[str, Any]]:
+        """将图片路径 / URL / 已有图片块转换为帖子 img 块（本地图片自动上传）."""
+        out: list[dict[str, Any]] = []
         for item in imgs or []:
             if isinstance(item, dict):
                 url = str(item.get("url") or "").strip()
@@ -974,17 +982,17 @@ class HeyboxClient:
                     img_block["width"] = int(item["width"])
                 if item.get("height") is not None:
                     img_block["height"] = int(item["height"])
-                blocks.append(img_block)
+                out.append(img_block)
                 continue
 
             item_str = str(item).strip()
             if not item_str:
                 continue
             if item_str.startswith(("http://", "https://")):
-                blocks.append({"type": "img", "url": item_str})
+                out.append({"type": "img", "url": item_str})
             else:
                 uploaded = await self.upload_image(item_str)
-                blocks.append(
+                out.append(
                     {
                         "type": "img",
                         "url": uploaded["url"],
@@ -992,28 +1000,97 @@ class HeyboxClient:
                         "height": int(uploaded["height"]),
                     }
                 )
+        return out
 
+    async def edit_post(
+        self,
+        link_id: int | str,
+        title: str | None = None,
+        content: str | None = None,
+        imgs: Sequence[str | Path | dict[str, Any]] | None = None,
+        topic_id: int | str | None = None,
+    ) -> dict[str, Any]:
+        """编辑自己已发布的图文帖（未指定的字段沿用原内容；指定 imgs 则替换全部图片）."""
+        if not self.session.is_logged_in:
+            raise HeyboxAPIError(
+                "请先扫码登录（运行 `xhh login` 或在 TUI 按 `l`）后再编辑帖子",
+                status="login",
+            )
+        lid = str(link_id).strip()
+        info = await self._get("/bbs/app/link/edit/info", params={"link_id": lid})
+        if str(info.get("status") or "") != "ok":
+            raise HeyboxAPIError(info.get("msg") or "获取帖子编辑信息失败", status=str(info.get("status")), raw=info)
+        link = (info.get("result") or {}).get("link") or {}
+        if str(link.get("userid") or "") != str(self.session.heybox_id):
+            raise HeyboxAPIError("只能编辑自己发布的帖子", status="forbidden", raw=info)
+
+        try:
+            old_blocks = json.loads(link.get("text") or "[]")
+        except (TypeError, ValueError):
+            old_blocks = []
+        old_text = "\n".join(
+            str(b.get("text") or "") for b in old_blocks if isinstance(b, dict) and b.get("type") == "text"
+        )
+        old_imgs = [b for b in old_blocks if isinstance(b, dict) and b.get("type") == "img"]
+
+        clean_title = (title if title is not None else str(link.get("title") or "")).strip()
+        clean_content = (content if content is not None else old_text).strip()
+        if not clean_title:
+            raise ValueError("帖子标题不能为空")
+        if len(clean_title) > 30:
+            raise ValueError(f"帖子标题最多 30 字（当前 {len(clean_title)} 字）")
+        if not clean_content:
+            raise ValueError("帖子正文不能为空")
+
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": clean_content}]
+        if imgs is not None:
+            blocks.extend(await self._build_img_blocks(imgs))
+        else:
+            blocks.extend(await self._build_img_blocks(old_imgs))
+
+        if topic_id is not None:
+            tid = str(topic_id).strip()
+        else:
+            tids = [str(t.get("topic_id")) for t in (link.get("topics") or []) if isinstance(t, dict)]
+            tid = ",".join(t for t in tids if t) or "7214"
+        return await self._submit_post_form(
+            clean_title, clean_content, blocks, tid, edit_link_id=lid, msg_default="修改成功"
+        )
+
+    async def _submit_post_form(
+        self,
+        clean_title: str,
+        clean_content: str,
+        blocks: list[dict[str, Any]],
+        topic_id: int | str,
+        edit_link_id: str | None = None,
+        msg_default: str = "发布成功",
+    ) -> dict[str, Any]:
         tid = str(topic_id or "7214").strip()
         link_tag = "28" if tid == "58144" else "27"
         words_count = str(max(1, (len(clean_title) + len(clean_content)) // 2))
+        form: dict[str, Any] = {
+            "title": clean_title,
+            "text": json.dumps(blocks, ensure_ascii=False, separators=(",", ":")),
+            "desc": clean_content[:100],
+            "words_count": words_count,
+            "topic_ids": tid,
+            "link_tag": link_tag,
+            "view_limit": "1",
+            "post_type": "1",
+            "original": "1",
+            "declaration": "0",
+            "schedule_ts": "0",
+            "hashtags": "[]",
+        }
+        if edit_link_id:
+            form["edit"] = "1"
+            form["link_id"] = edit_link_id
 
         payload = await self._post(
             "/bbs/app/api/link/post",
             params=self._website_write_params(),
-            data={
-                "title": clean_title,
-                "text": json.dumps(blocks, ensure_ascii=False, separators=(",", ":")),
-                "desc": clean_content[:100],
-                "words_count": words_count,
-                "topic_ids": tid,
-                "link_tag": link_tag,
-                "view_limit": "1",
-                "post_type": "1",
-                "original": "1",
-                "declaration": "0",
-                "schedule_ts": "0",
-                "hashtags": "[]",
-            },
+            data=form,
             use_rnd=True,
         )
         st = str(payload.get("status") or "")
@@ -1025,10 +1102,15 @@ class HeyboxClient:
             raise HeyboxAPIError(payload.get("msg") or "发布帖子失败", status=st, raw=payload)
 
         res = payload.get("result") or {}
-        link_id = payload.get("link_id") or (res.get("link_id") if isinstance(res, dict) else "") or ""
+        link_id = (
+            payload.get("link_id")
+            or (res.get("link_id") if isinstance(res, dict) else "")
+            or edit_link_id
+            or ""
+        )
         return {
             "status": "ok",
             "link_id": str(link_id),
-            "msg": payload.get("msg") or "发布成功",
+            "msg": payload.get("msg") or msg_default,
             "result": res,
         }

@@ -98,6 +98,7 @@ xhh feed -n 10 --json
 xhh comment <link_id> "说得太对了[cube_滑稽]"
 xhh comment <link_id> "确实" --root-id <主评ID> --reply-id <目标评论ID>
 xhh publish -t "测试标题" -c "帖子正文内容" --topic 盒友杂谈
+xhh edit <link_id> -c "修改后的正文"   # 编辑自己的帖子，未指定字段沿用原内容（-t 标题 / --content-file 文件 / -i 替换图片）
 xhh publish -t "图文推广标题" -c "正文内容" -i assets/tui_feed.png -i assets/tui_detail.png --topic 盒友杂谈
 ```
 

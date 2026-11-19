@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 import webbrowser
+from pathlib import Path
 from typing import Any, Sequence
 
 from rich.console import Console
@@ -478,6 +479,50 @@ async def _cmd_publish(
         return 0
 
 
+async def _cmd_edit(
+    link_id: str,
+    title: str | None = None,
+    content: str | None = None,
+    content_file: str | None = None,
+    images: Sequence[str] | None = None,
+    topic: str | None = None,
+    as_json: bool = False,
+) -> int:
+    if content_file:
+        content = Path(content_file).expanduser().read_text(encoding="utf-8")
+    if title is None and content is None and not images and topic is None:
+        raise ValueError("请至少指定一项修改: -t / -c / --content-file / -i / --topic")
+    async with HeyboxClient() as client:
+        topic_id: Any = None
+        if topic is not None:
+            resolved = await client.resolve_topic(topic)
+            topic_id = resolved.topic_id if resolved is not None else (topic if topic.isdigit() else None)
+            if topic_id is None:
+                raise ValueError(f"未找到匹配的板块: {topic}")
+        res = await client.edit_post(
+            link_id=link_id,
+            title=title,
+            content=content,
+            imgs=list(images) if images else None,
+            topic_id=topic_id,
+        )
+        lid = str(res.get("link_id") or link_id)
+        share_url = f"https://www.xiaoheihe.cn/app/bbs/link/{lid}"
+        if as_json:
+            _print_json(
+                {
+                    "status": res["status"],
+                    "link_id": lid,
+                    "share_url": share_url,
+                    "msg": res.get("msg") or "修改成功",
+                    "result": res.get("result") or {},
+                }
+            )
+            return 0
+        console.print(f"[bold green]✅ {res.get('msg', '修改成功')}[/bold green] (link_id: {lid}, 链接: {share_url})")
+        return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="xhh",
@@ -593,6 +638,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_publish.add_argument("-j", "--json", dest="as_json", action="store_true", help="以 JSON 结构输出")
 
+    p_edit = sub.add_parser("edit", aliases=["update"], help="编辑自己已发布的图文帖（未指定字段沿用原内容）")
+    p_edit.add_argument("link_id", help="要编辑的帖子 link_id")
+    p_edit.add_argument("-t", "--title", default=None, help="新标题 (<=30 字)")
+    p_edit.add_argument("-c", "--content", default=None, help="新正文内容")
+    p_edit.add_argument("--content-file", default=None, help="从文件读取新正文 (UTF-8)")
+    p_edit.add_argument(
+        "-i", "--image", action="append", dest="images", default=[], help="替换全部图片（本地路径或 URL，可多次指定）"
+    )
+    p_edit.add_argument("--topic", default=None, help="新的板块名称或 topic_id")
+    p_edit.add_argument("-j", "--json", dest="as_json", action="store_true", help="以 JSON 结构输出")
+
     return parser
 
 
@@ -611,7 +667,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     as_json=args.direct_json,
                 )
             )
-        except (HeyboxAPIError, ValueError) as exc:
+        except (HeyboxAPIError, ValueError, OSError) as exc:
             if args.direct_json:
                 _print_json({"error": str(exc)})
             else:
@@ -686,7 +742,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     as_json=want_json,
                 )
             )
-    except (HeyboxAPIError, ValueError) as exc:
+        if args.command in ("edit", "update"):
+            return asyncio.run(
+                _cmd_edit(
+                    link_id=args.link_id,
+                    title=args.title,
+                    content=args.content,
+                    content_file=args.content_file,
+                    images=args.images,
+                    topic=args.topic,
+                    as_json=want_json,
+                )
+            )
+    except (HeyboxAPIError, ValueError, OSError) as exc:
         if want_json:
             _print_json({"error": str(exc)})
         else:

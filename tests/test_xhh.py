@@ -472,6 +472,82 @@ def test_cli_comment_and_publish_json(
     assert p_data["result"]["imgs_count"] == 2
 
 
+def test_client_edit_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    old_text = json.dumps(
+        [
+            {"type": "text", "text": "旧正文 raw。x"},
+            {"type": "img", "url": "https://img.example.com/1.png", "width": 10, "height": 20},
+        ],
+        ensure_ascii=False,
+    )
+
+    async def _run() -> None:
+        authed = HeyboxClient(session=SessionData(heybox_id="1001", pkey="pk", nickname="t"))
+        posted: list[tuple[str, dict[str, Any], dict[str, Any] | None, bool]] = []
+
+        async def _fake_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            owner = "1001" if params and params.get("link_id") == "555" else "9999"
+            return {
+                "status": "ok",
+                "result": {
+                    "link": {
+                        "userid": owner,
+                        "title": "旧标题",
+                        "text": old_text,
+                        "topics": [{"topic_id": 7214, "name": "盒友杂谈"}],
+                    }
+                },
+            }
+
+        async def _fake_post(
+            path: str, data: dict[str, Any], params: dict[str, Any] | None = None, use_rnd: bool = False
+        ) -> dict[str, Any]:
+            posted.append((path, data, params, use_rnd))
+            return {"status": "ok", "msg": "修改成功", "result": {}}
+
+        monkeypatch.setattr(authed, "_get", _fake_get)
+        monkeypatch.setattr(authed, "_post", _fake_post)
+        async with authed:
+            res = await authed.edit_post("555", content="新正文 raw.x")
+            assert res["status"] == "ok" and res["link_id"] == "555"
+            path, form, _params, use_rnd = posted[-1]
+            assert path == "/bbs/app/api/link/post" and use_rnd is True
+            assert form["edit"] == "1" and form["link_id"] == "555"
+            assert form["title"] == "旧标题" and form["topic_ids"] == "7214"
+            blocks = json.loads(form["text"])
+            assert blocks[0] == {"type": "text", "text": "新正文 raw.x"}
+            assert blocks[1]["url"] == "https://img.example.com/1.png"
+            assert blocks[1]["width"] == 10
+
+            with pytest.raises(HeyboxAPIError):
+                await authed.edit_post("777", content="x")
+            with pytest.raises(ValueError, match="30"):
+                await authed.edit_post("555", title="a" * 31)
+
+    asyncio.run(_run())
+
+
+def test_cli_edit_json(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = _FakeClient()
+    monkeypatch.setattr("xhh.cli.HeyboxClient", lambda *a, **kw: fake)
+
+    rc = cli_main(["edit", "30001", "-c", "改后正文", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+    assert fake.edited_posts[-1]["content"] == "改后正文"
+    assert fake.edited_posts[-1]["title"] is None
+
+    body = tmp_path / "body.txt"
+    body.write_text("文件正文 install.sh", encoding="utf-8")
+    assert cli_main(["edit", "30001", "--content-file", str(body), "-t", "新标题", "--json"]) == 0
+    capsys.readouterr()
+    assert fake.edited_posts[-1]["content"] == "文件正文 install.sh"
+    assert fake.edited_posts[-1]["title"] == "新标题"
+
+    assert cli_main(["edit", "30001", "--json"]) == 1
+    assert "error" in json.loads(capsys.readouterr().out)
+
+
 class _FakeClient:
     """供 TUI 与 CLI 自动化测试使用的确定性 Mock 客户端."""
 
@@ -479,6 +555,7 @@ class _FakeClient:
         self.session = SessionData()
         self.created_posts: list[dict[str, Any]] = []
         self.created_comments: list[dict[str, Any]] = []
+        self.edited_posts: list[dict[str, Any]] = []
 
     async def __aenter__(self) -> _FakeClient:
         return self
@@ -714,6 +791,19 @@ class _FakeClient:
             }
         )
         return {"status": "ok", "msg": "评论成功", "result": {"comment": [{"commentid": "9999"}]}}
+
+    async def edit_post(
+        self,
+        link_id: Any,
+        title: Any = None,
+        content: Any = None,
+        imgs: Any = None,
+        topic_id: Any = None,
+    ) -> dict[str, Any]:
+        self.edited_posts.append(
+            {"link_id": str(link_id), "title": title, "content": content, "imgs": imgs, "topic_id": topic_id}
+        )
+        return {"status": "ok", "link_id": str(link_id), "msg": "修改成功", "result": {}}
 
     async def create_post(
         self, title: str, content: str, topic_id: Any = "7214", imgs: Any = None
