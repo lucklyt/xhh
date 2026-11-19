@@ -597,7 +597,7 @@ class NewPostModal(ModalScreen[dict[str, Any] | None]):
         with Vertical(id="newpost-dialog"):
             yield Static("new-post (Ctrl+S submit / Esc cancel)" if _is_stealth(self) else "📝 发布新帖 (Ctrl+S 提交 / Esc 取消)", id="newpost-title")
             yield Input(value=self.default_topic, placeholder="目标板块名或 topic_id（默认: 盒友杂谈）", id="post-topic-input")
-            yield Input(placeholder="输入帖子标题...", id="post-title-input")
+            yield Input(placeholder="输入帖子标题（2~30 字）...", id="post-title-input")
             yield Input(placeholder="可选：附加图片本地路径或 URL，多张用英文逗号分隔...", id="post-images-input")
             yield TextArea(placeholder="输入帖子正文内容...", id="post-content-area")
             yield Static("提示: 发帖需先扫码登录 (按 l)", id="newpost-status")
@@ -625,6 +625,10 @@ class NewPostModal(ModalScreen[dict[str, Any] | None]):
 
         if not title:
             status.update("请输入帖子标题")
+            self.query_one("#post-title-input", Input).focus()
+            return
+        if len(title) > 30:
+            status.update(f"帖子标题最多 30 字（当前 {len(title)} 字）")
             self.query_one("#post-title-input", Input).focus()
             return
         if not content:

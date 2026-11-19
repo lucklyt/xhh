@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PIL import Image
-from textual.widgets import ContentSwitcher, OptionList, Static
+from textual.widgets import ContentSwitcher, Input, OptionList, Static, TextArea
 
 from xhh.cli import main as cli_main
 from xhh.client import HeyboxAPIError, HeyboxClient
@@ -215,6 +215,16 @@ def test_client_create_comment_and_post(tmp_path: Path, monkeypatch: pytest.Monk
             assert captured[0][1]["link_id"] == "12345"
             assert captured[0][1]["root_id"] == "88"
             assert captured[0][1]["reply_id"] == "99"
+            assert captured[0][2] is not None
+            assert captured[0][2]["x_app"] == "heybox_website"
+            assert captured[0][2]["web_version"] == "3.0"
+            assert captured[0][2]["x_client_type"] == "weboutapp"
+            assert captured[0][2]["x_client_version"] is None
+            assert len(str(captured[0][2]["device_id"])) == 32
+            assert captured[0][3] is True
+
+            with pytest.raises(ValueError, match="30"):
+                await authed.create_post("a" * 31, "正文")
 
             p_res = await authed.create_post("测试标题", "测试正文内容", topic_id="43", imgs=[sample_png])
             assert p_res["status"] == "ok"
@@ -467,6 +477,8 @@ class _FakeClient:
 
     def __init__(self) -> None:
         self.session = SessionData()
+        self.created_posts: list[dict[str, Any]] = []
+        self.created_comments: list[dict[str, Any]] = []
 
     async def __aenter__(self) -> _FakeClient:
         return self
@@ -693,11 +705,27 @@ class _FakeClient:
     async def create_comment(
         self, link_id: Any, text: str, root_id: Any = "-1", reply_id: Any = "-1"
     ) -> dict[str, Any]:
+        self.created_comments.append(
+            {
+                "link_id": str(link_id),
+                "text": text,
+                "root_id": str(root_id),
+                "reply_id": str(reply_id),
+            }
+        )
         return {"status": "ok", "msg": "评论成功", "result": {"comment": [{"commentid": "9999"}]}}
 
     async def create_post(
         self, title: str, content: str, topic_id: Any = "7214", imgs: Any = None
     ) -> dict[str, Any]:
+        self.created_posts.append(
+            {
+                "title": title,
+                "content": content,
+                "topic_id": str(topic_id),
+                "imgs": list(imgs or []),
+            }
+        )
         return {
             "status": "ok",
             "link_id": "30001",
@@ -773,8 +801,15 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.press("m")
             await pilot.pause(0.1)
             assert isinstance(app.screen, CommentModal)
-            await pilot.press("escape")
+            app.screen.query_one("#comment-input", Input).value = "TUI 实测评论"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert not isinstance(app.screen, CommentModal)
+            assert fake_client.created_comments[-1]["text"] == "TUI 实测评论"
+            assert sub_switcher.current == "detail-comments-view"
+            await pilot.press("c")
             await pilot.pause(0.1)
+            assert sub_switcher.current == "detail-body-view"
 
             # 3. 按 c 切换到评论视图：每页固定 10 条无滚动，按 n 翻到第 2 页（5 条），按 e 弹出楼中楼弹窗
             await pilot.press("c")
@@ -832,12 +867,35 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.press("escape")
             await pilot.pause(0.1)
 
-            # 7b. 按 P (Shift+p) 弹出发帖弹窗并关闭
+            # 7b. 按 P (Shift+p) 弹出发帖弹窗：校验标题字数限制并提交图文新帖
             await pilot.press("P")
             await pilot.pause(0.1)
             assert isinstance(app.screen, NewPostModal)
+            app.screen.query_one("#post-title-input", Input).value = "a" * 31
+            app.screen.query_one("#post-content-area", TextArea).text = "正文"
+            await pilot.press("ctrl+s")
+            await pilot.pause(0.1)
+            assert isinstance(app.screen, NewPostModal)
+            assert "30" in str(app.screen.query_one("#newpost-status", Static).render())
+            assert fake_client.created_posts == []
+
+            app.screen.query_one("#post-topic-input", Input).value = "CS2"
+            app.screen.query_one("#post-title-input", Input).value = "TUI 实测发帖"
+            app.screen.query_one("#post-images-input", Input).value = "shot1.png, shot2.png"
+            app.screen.query_one("#post-content-area", TextArea).text = "来自 TUI 弹窗的正文"
+            await pilot.press("ctrl+s")
+            await pilot.pause(0.3)
+            assert not isinstance(app.screen, NewPostModal)
+            assert fake_client.created_posts[-1] == {
+                "title": "TUI 实测发帖",
+                "content": "来自 TUI 弹窗的正文",
+                "topic_id": "43",
+                "imgs": ["shot1.png", "shot2.png"],
+            }
+            assert switcher.current == "detail-pane"
             await pilot.press("escape")
             await pilot.pause(0.1)
+            assert switcher.current == "list-pane"
 
             # 8. 左侧栏无需滚动条，支持点击「热门板块」栏目及收藏板块
             sidebar = app.query_one("#sidebar-list", OptionList)

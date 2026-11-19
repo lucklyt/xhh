@@ -743,6 +743,17 @@ class HeyboxClient:
 
     # -------------------- 发表评论与发帖 --------------------
 
+    def _website_write_params(self) -> dict[str, Any]:
+        """构造网站端写接口所需的平台标识参数."""
+        device_id = hashlib.md5(f"xhh-web:{self.session.heybox_id}".encode("utf-8")).hexdigest()
+        return {
+            "x_app": "heybox_website",
+            "x_client_type": "weboutapp",
+            "web_version": "3.0",
+            "device_id": device_id,
+            "x_client_version": None,
+        }
+
     async def create_comment(
         self,
         link_id: int | str,
@@ -762,6 +773,7 @@ class HeyboxClient:
 
         payload = await self._post(
             "/bbs/app/comment/create",
+            params=self._website_write_params(),
             data={
                 "link_id": str(link_id),
                 "text": content,
@@ -769,6 +781,7 @@ class HeyboxClient:
                 "reply_id": str(reply_id),
                 "is_cy": "0",
             },
+            use_rnd=True,
         )
         st = str(payload.get("status") or "")
         if st in ("login", "relogin"):
@@ -945,6 +958,8 @@ class HeyboxClient:
         clean_content = content.strip()
         if not clean_title:
             raise ValueError("帖子标题不能为空")
+        if len(clean_title) > 30:
+            raise ValueError(f"帖子标题最多 30 字（当前 {len(clean_title)} 字）")
         if not clean_content:
             raise ValueError("帖子正文不能为空")
 
@@ -981,17 +996,10 @@ class HeyboxClient:
         tid = str(topic_id or "7214").strip()
         link_tag = "28" if tid == "58144" else "27"
         words_count = str(max(1, (len(clean_title) + len(clean_content)) // 2))
-        device_id = hashlib.md5(f"xhh-web:{self.session.heybox_id}".encode("utf-8")).hexdigest()
 
         payload = await self._post(
             "/bbs/app/api/link/post",
-            params={
-                "x_app": "heybox_website",
-                "x_client_type": "weboutapp",
-                "web_version": "3.0",
-                "device_id": device_id,
-                "x_client_version": None,
-            },
+            params=self._website_write_params(),
             data={
                 "title": clean_title,
                 "text": json.dumps(blocks, ensure_ascii=False, separators=(",", ":")),
