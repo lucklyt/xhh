@@ -18,7 +18,7 @@ from xhh import __version__
 from xhh.client import HeyboxAPIError, HeyboxClient
 from xhh.config import SessionData
 from xhh.models import PostSummary, format_count, format_time, parse_floor_range
-from xhh.qr import render_qr_rich, save_qr_html
+from xhh.qr import render_qr_half_blocks, render_qr_rich, save_qr_html
 
 console = Console()
 
@@ -66,12 +66,14 @@ def _print_posts_table(posts: list[PostSummary], title: str) -> None:
     console.print("[dim]提示: 运行 `xhh post <linkid>` 可阅读完整正文与评论区[/dim]")
 
 
-async def _cmd_login(dry_run: bool = False, compact: bool = False, open_browser: bool = False) -> int:
+async def _cmd_login(dry_run: bool = False, large: bool = False, open_browser: bool = False) -> int:
     async with HeyboxClient() as client:
         qr_info = await client.get_qrcode()
         qr_url = qr_info["qr_url"]
-        use_compact = compact or (not console.is_terminal)
-        qr_renderable = render_qr_rich(qr_url, border=1, compact=use_compact)
+        if console.is_terminal:
+            qr_renderable = render_qr_rich(qr_url, border=1, compact=not large)
+        else:
+            qr_renderable = Text(render_qr_half_blocks(qr_url, border=1), no_wrap=True)
         console.print(
             Panel(
                 qr_renderable,
@@ -442,14 +444,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_login = sub.add_parser("login", help="在终端显示二维码并扫码登录小黑盒")
     p_login.add_argument("--dry-run", action="store_true", help="仅获取并渲染二维码及检查一次状态后退出")
-    p_login.add_argument("--compact", action="store_true", help="使用紧凑半高块模式渲染二维码")
+    p_login.add_argument("--large", action="store_true", help="使用双倍尺寸纯 ASCII 空格方块渲染二维码")
+    p_login.add_argument("--compact", action="store_true", help="使用紧凑模式渲染二维码（默认已开启）")
     p_login.add_argument("--browser", action="store_true", help="同时在默认浏览器中打开高清 SVG 二维码")
 
     sub.add_parser("whoami", help="查看当前登录账号信息")
     sub.add_parser("logout", help="退出登录并清除本地会话")
 
     p_feed = sub.add_parser("feed", help="查看首页推荐帖子")
-    p_feed.add_argument("-n", "--limit", type=int, default=15, help="展示数量 (默认 15)")
+    p_feed.add_argument("-n", "--limit", type=int, default=10, help="展示数量 (默认 10)")
     p_feed.add_argument("--offset", type=int, default=0, help="分页偏移量")
     p_feed.add_argument("-j", "--json", dest="as_json", action="store_true", help="以 JSON 结构输出")
 
@@ -475,7 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="hot-rank",
         help="排序方式: hot-rank(智能) / reply(回复时间) / create(发布时间)",
     )
-    p_topic.add_argument("-n", "--limit", type=int, default=15, help="展示数量 (默认 15)")
+    p_topic.add_argument("-n", "--limit", type=int, default=10, help="展示数量 (默认 10)")
     p_topic.add_argument("-j", "--json", dest="as_json", action="store_true", help="以 JSON 结构输出")
 
     p_post = sub.add_parser("post", aliases=["view"], help="查看指定帖子正文与评论区 (支持楼层过滤与 JSON 输出)")
@@ -494,7 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_search = sub.add_parser("search", help="搜索游戏板块与帖子")
     p_search.add_argument("query", help="搜索关键词")
-    p_search.add_argument("-n", "--limit", type=int, default=15, help="展示数量")
+    p_search.add_argument("-n", "--limit", type=int, default=10, help="展示数量 (默认 10)")
     p_search.add_argument("-j", "--json", dest="as_json", action="store_true", help="以 JSON 结构输出")
 
     return parser
@@ -531,8 +534,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     want_json = bool(getattr(args, "as_json", False))
     try:
         if args.command == "login":
+            use_large = bool(args.large) and not bool(args.compact)
             return asyncio.run(
-                _cmd_login(dry_run=args.dry_run, compact=args.compact, open_browser=args.browser)
+                _cmd_login(dry_run=args.dry_run, large=use_large, open_browser=args.browser)
             )
         if args.command == "whoami":
             return asyncio.run(_cmd_whoami())

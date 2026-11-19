@@ -57,16 +57,19 @@ def test_qr_rendering() -> None:
     assert len(widths) == 1
     assert any(ch in qr_text for ch in ("█", "▀", "▄"))
 
-    # 默认标准二维码应全部由纯 ASCII 空格与换行组成，每行宽度严格一致
+    # 默认紧凑模式 (compact=True) 应全部由统一字符 '▀' 与换行组成，零空格混排，高度约 19~20 行
+    compact_qr = render_qr_rich(url, border=1)
+    assert set(compact_qr.plain) <= {"▀", "\n"}
+    compact_lines = compact_qr.plain.splitlines()
+    assert 18 <= len(compact_lines) <= 22
+    assert len({len(line) for line in compact_lines}) == 1
+
+    # 双倍尺寸模式 (compact=False) 应全部由纯 ASCII 空格与换行组成，每行宽度严格一致
     rich_qr = render_qr_rich(url, border=1, compact=False)
     assert set(rich_qr.plain) <= {" ", "\n"}
     rich_lines = rich_qr.plain.splitlines()
     assert len(rich_lines) >= 21
     assert len({len(line) for line in rich_lines}) == 1
-
-    # 紧凑半高块模式也可用
-    compact_qr = render_qr_rich(url, border=1, compact=True)
-    assert compact_qr.style == "#000000 on #ffffff"
 
     # SVG HTML 导出
     html_path = save_qr_html(url)
@@ -363,21 +366,28 @@ class _FakeClient:
         sort_filter: str = "hot",
         fallback_imgs: Any = None,
     ) -> PostDetail:
-        root_reply = CommentReply(
-            commentid="9001",
-            username="神评大王",
-            user_level=25,
-            ip_location="广东",
-            text="太真实了😏[滑稽]",
-            up=99,
-            create_at=1794801000,
-            floor_num=1,
-            child_num=2,
-            is_cy=True,
-            is_top=True,
-            is_link_owner=False,
-            reply_to_user="",
-        )
+        threads = [
+            CommentThread(
+                root=CommentReply(
+                    commentid=str(9000 + i),
+                    username=f"神评大王{i}" if i == 1 else f"评论盒友{i}",
+                    user_level=20 + (i % 10),
+                    ip_location="广东",
+                    text=f"第 {i} 条评论：太真实了😏[滑稽]",
+                    up=100 - i,
+                    create_at=1794801000 + i,
+                    floor_num=i,
+                    child_num=2 if i == 1 else 0,
+                    is_cy=(i == 1),
+                    is_top=(i == 1),
+                    is_link_owner=False,
+                    reply_to_user="",
+                ),
+                children=[],
+                has_more=(i == 1),
+            )
+            for i in range(1, 16)
+        ]
         return PostDetail(
             linkid=str(link_id),
             title="测试帖子完整标题",
@@ -390,15 +400,15 @@ class _FakeClient:
             topic_id="43",
             up=120,
             award_num=15,
-            comment_num=32,
+            comment_num=15,
             favour_count=9,
             create_at=1794800000,
             share_url="https://www.xiaoheihe.cn/app/bbs/link/10001",
             has_video=False,
-            comments=[CommentThread(root=root_reply, children=[], has_more=True)],
+            comments=threads,
             has_more_floors=False,
             total_page=1,
-            total_floor_num=1,
+            total_floor_num=15,
         )
 
     async def get_post_detail_by_floors(
@@ -480,25 +490,34 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     async def _run() -> None:
         fake_client = _FakeClient()
         app = HeyboxApp(client=fake_client)  # type: ignore[arg-type]
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause(0.2)
 
-            # 1. 验证初始加载推荐流（固定单页 15 条，不追加）
+            # 1. 标准 80x24 窗口下默认固定每页 10 条，一屏完整展示无滚动
             feed_list = app.query_one("#feed-list", OptionList)
-            assert feed_list.option_count == FEED_PAGE_SIZE
+            assert feed_list.option_count == 10
             assert app._posts[0].linkid == "10001"
+            assert feed_list.virtual_size.height <= feed_list.size.height
 
-            # 1b. 按 n 翻到第 2 页（刷新为剩余 10 条），按 p 返回第 1 页（15 条）
+            # 1b. 按 n 翻到第 2 页（10 条），第 3 页（5 条），按 p 返回第 1 页
             await pilot.press("n")
             await pilot.pause(0.2)
             assert app._feed_page == 2
             assert feed_list.option_count == 10
-            assert app._posts[0].linkid == str(10001 + FEED_PAGE_SIZE)
+            assert app._posts[0].linkid == "10011"
+
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            assert app._feed_page == 3
+            assert feed_list.option_count == 5
+            assert app._posts[0].linkid == "10021"
 
             await pilot.press("p")
             await pilot.pause(0.1)
+            await pilot.press("p")
+            await pilot.pause(0.1)
             assert app._feed_page == 1
-            assert feed_list.option_count == FEED_PAGE_SIZE
+            assert feed_list.option_count == 10
             assert app._posts[0].linkid == "10001"
 
             # 2. 按 Enter 进入帖子详情视图：默认只显示正文，不显示评论
@@ -510,10 +529,23 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             assert sub_switcher.current == "detail-body-view"
             assert "测试帖子完整标题" in str(app.query_one("#detail-header", Static).render())
 
-            # 3. 按 c 切换到评论视图，再按 e 弹出楼中楼弹窗
+            # 3. 按 c 切换到评论视图：每页固定 10 条无滚动，按 n 翻到第 2 页（5 条），按 e 弹出楼中楼弹窗
             await pilot.press("c")
             await pilot.pause(0.1)
             assert sub_switcher.current == "detail-comments-view"
+            cmt_list = app.query_one("#comment-list", OptionList)
+            assert cmt_list.option_count == 10
+            assert cmt_list.virtual_size.height <= cmt_list.size.height
+
+            await pilot.press("n")
+            await pilot.pause(0.1)
+            assert app._comment_page == 2
+            assert cmt_list.option_count == 5
+            await pilot.press("p")
+            await pilot.pause(0.1)
+            assert app._comment_page == 1
+            assert cmt_list.option_count == 10
+
             await pilot.press("e")
             await pilot.pause(0.2)
             assert isinstance(app.screen, SubCommentModal)
@@ -530,10 +562,12 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.pause(0.1)
             assert switcher.current == "list-pane"
 
-            # 5. 弹出扫码登录弹窗并关闭
+            # 5. 80x24 标准窗口下弹出扫码登录弹窗，二维码无需滚动即可完整展示
             await pilot.press("l")
             await pilot.pause(0.2)
             assert isinstance(app.screen, QRLoginModal)
+            qr_scroll = app.screen.query_one("#qr-scroll")
+            assert qr_scroll.virtual_size.height <= qr_scroll.size.height
             await pilot.press("escape")
             await pilot.pause(0.1)
 
@@ -572,5 +606,20 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.press("s")
             await pilot.pause(0.2)
             assert app._topic_sort_idx == 1
+
+    asyncio.run(_run())
+
+
+def test_tui_adaptive_window_size(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XHH_CONFIG_DIR", str(tmp_path))
+
+    async def _run() -> None:
+        app = HeyboxApp(client=_FakeClient())  # type: ignore[arg-type]
+        # 较大窗口 (100x34) 下自动根据高度容纳更多条数 (31 // 2 = 15 条)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.pause(0.2)
+            feed_list = app.query_one("#feed-list", OptionList)
+            assert feed_list.option_count == 15
+            assert feed_list.virtual_size.height <= feed_list.size.height
 
     asyncio.run(_run())

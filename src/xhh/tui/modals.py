@@ -39,19 +39,14 @@ class QRLoginModal(ModalScreen[SessionData | None]):
         self._poll_task: asyncio.Task[None] | None = None
         self._logged_in_session: SessionData | None = None
         self._current_qr_url: str = ""
-        self._compact_qr: bool = False
+        self._compact_qr: bool = True
 
     def compose(self) -> ComposeResult:
         with Vertical(id="qr-dialog"):
-            yield Static("📱 小黑盒 App 扫码登录", id="qr-title")
-            yield Static("", id="qr-account-banner")
+            yield Static("📱 小黑盒扫码登录", id="qr-title")
             with VerticalScroll(id="qr-scroll"):
                 yield Static("正在生成登录二维码...", id="qr-box")
-            yield Static("⏳ 初始化中...", id="qr-status")
-            yield Static(
-                "b:浏览器打开高清码  |  m:切换紧凑模式  |  r:刷新  |  u:退出账号  |  Esc:关闭",
-                id="qr-hint",
-            )
+            yield Static("⏳ 初始化中...  |  b:浏览器  m:切尺寸  r:刷新  Esc:关闭", id="qr-status")
 
     def on_mount(self) -> None:
         self._refresh_banner()
@@ -63,12 +58,12 @@ class QRLoginModal(ModalScreen[SessionData | None]):
             self._poll_task.cancel()
 
     def _refresh_banner(self) -> None:
-        banner = self.query_one("#qr-account-banner", Static)
+        title = self.query_one("#qr-title", Static)
         if self.client.session.is_logged_in:
-            lvl = f" (Lv.{self.client.session.level})" if self.client.session.level is not None else ""
-            banner.update(f"🟢 当前已登录: @{self.client.session.nickname}{lvl}（扫码可切换账号）")
+            lvl = f"(Lv.{self.client.session.level})" if self.client.session.level is not None else ""
+            title.update(f"📱 小黑盒扫码登录  |  🟢 @{self.client.session.nickname}{lvl}")
         else:
-            banner.update("⚪ 当前未登录，登录后可同步关注板块与全站搜索")
+            title.update("📱 小黑盒扫码登录  |  ⚪ 未登录")
 
     def _start_qr_flow(self) -> None:
         if self._poll_task and not self._poll_task.done():
@@ -91,11 +86,8 @@ class QRLoginModal(ModalScreen[SessionData | None]):
 
         self._current_qr_url = qr_info["qr_url"]
         qr_box.update(render_qr_rich(self._current_qr_url, border=1, compact=self._compact_qr))
-        qr_scroll = self.query_one("#qr-scroll", VerticalScroll)
-        if not self._compact_qr and self.app.size.height < 42:
-            status_lbl.update("⏳ 等待扫码（窗口较矮，可按 m 切紧凑码 / b 浏览器打开 / 拉高窗口）")
-        else:
-            status_lbl.update("⏳ 等待小黑盒 App 扫码...（若无法识别可按 b 用浏览器打开）")
+        hint_tail = "b:浏览器 m:切尺寸 r:刷新 u:登出 Esc:关"
+        status_lbl.update(f"⏳ 等待 App 扫码 | {hint_tail}")
 
         qr_token = qr_info["qr_token"]
         while not self._stop_polling:
@@ -105,12 +97,12 @@ class QRLoginModal(ModalScreen[SessionData | None]):
             try:
                 res = await self.client.poll_qr_state(qr_token)
             except Exception as exc:
-                status_lbl.update(f"⚠️ 轮询网络波动: {exc}")
+                status_lbl.update(f"⚠️ 轮询波动: {exc}")
                 continue
 
             state = res.get("state")
             if state == "waiting":
-                status_lbl.update("⏳ 等待小黑盒 App 扫码...")
+                status_lbl.update(f"⏳ 等待 App 扫码 | {hint_tail}")
             elif state == "scanned":
                 status_lbl.update("📱 已扫码！请在手机端点击「确认登录」")
             elif state == "confirmed":
@@ -122,7 +114,7 @@ class QRLoginModal(ModalScreen[SessionData | None]):
                 self.dismiss(session)
                 return
             elif state == "expired":
-                status_lbl.update("⌛ 二维码已过期，请按 r 刷新二维码")
+                status_lbl.update("⌛ 二维码已过期，按 r 刷新 | Esc:关闭")
                 return
             elif state == "requires_2fa":
                 status_lbl.update(f"⚠️ {res.get('msg')}")
@@ -136,6 +128,8 @@ class QRLoginModal(ModalScreen[SessionData | None]):
 
     def action_toggle_qr_mode(self) -> None:
         self._compact_qr = not self._compact_qr
+        dialog = self.query_one("#qr-dialog")
+        dialog.styles.width = 60 if self._compact_qr else 90
         if self._current_qr_url:
             qr_box = self.query_one("#qr-box", Static)
             qr_box.update(render_qr_rich(self._current_qr_url, border=1, compact=self._compact_qr))
