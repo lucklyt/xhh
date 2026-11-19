@@ -126,6 +126,8 @@ class HeyboxClient:
         data: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], httpx.Response]:
         query = generate_hkey_params(path)
+        if self.session.heybox_id:
+            query.setdefault("heybox_id", self.session.heybox_id)
         if params:
             for k, v in params.items():
                 if v is not None:
@@ -161,7 +163,8 @@ class HeyboxClient:
         cookies_dict = dict(self.session.cookies)
         for jar in (self._client.cookies, resp.cookies if resp is not None else None):
             if jar is not None:
-                for ck, cv in jar.items():
+                for cookie in jar.jar:
+                    ck, cv = cookie.name, cookie.value or ""
                     if cv and cv not in ("None", "none", "null", "undefined"):
                         cookies_dict[ck] = cv
 
@@ -947,9 +950,9 @@ class HeyboxClient:
                     continue
                 img_block: dict[str, Any] = {"type": "img", "url": url}
                 if item.get("width") is not None:
-                    img_block["width"] = str(item["width"])
+                    img_block["width"] = int(item["width"])
                 if item.get("height") is not None:
-                    img_block["height"] = str(item["height"])
+                    img_block["height"] = int(item["height"])
                 blocks.append(img_block)
                 continue
 
@@ -964,8 +967,8 @@ class HeyboxClient:
                     {
                         "type": "img",
                         "url": uploaded["url"],
-                        "width": str(uploaded["width"]),
-                        "height": str(uploaded["height"]),
+                        "width": int(uploaded["width"]),
+                        "height": int(uploaded["height"]),
                     }
                 )
 
@@ -976,6 +979,7 @@ class HeyboxClient:
         payload = await self._post(
             "/bbs/app/api/link/post",
             data={
+                "heybox_id": self.session.heybox_id,
                 "title": clean_title,
                 "text": json.dumps(blocks, ensure_ascii=False),
                 "desc": clean_content[:100],
@@ -986,6 +990,8 @@ class HeyboxClient:
                 "post_type": "1",
                 "original": "1",
                 "declaration": "0",
+                "schedule_ts": "0",
+                "draft": "0",
                 "hashtags": "[]",
             },
         )

@@ -3,9 +3,14 @@
 在终端中沉浸式浏览小黑盒社区的交互式 **TUI** 应用（同时提供快捷 **CLI** 子命令与 JSON 输出）：支持 App 扫码登录、推荐流、热议/热搜/热门游戏榜、指定游戏板块筛选（综合/热点/排序）、帖子正文与楼中楼评论分离阅读、终端悬停看图、发评论与发帖。
 
 <p align="center">
-  <img src="assets/tui_feed.png" alt="小黑盒 TUI 雅致主题 (elegant)" width="32%" />
-  <img src="assets/tui_stealth.png" alt="小黑盒 TUI 极简低调模式 (stealth)" width="32%" />
-  <img src="assets/tui_detail.png" alt="帖子正文与终端 TrueColor 图片预览浮层" width="32%" />
+  <img src="assets/tui_stealth.png" alt="默认极简低调主题 (stealth)" width="32%" />
+  <img src="assets/tui_feed.png" alt="华丽炫彩主题 (elegant)" width="32%" />
+  <img src="assets/tui_topics.png" alt="热门板块自适应分页目录" width="32%" />
+</p>
+<p align="center">
+  <img src="assets/tui_detail_body.png" alt="帖子正文独立阅读与图片胶囊" width="32%" />
+  <img src="assets/tui_detail.png" alt="终端 TrueColor 悬停看图浮层" width="32%" />
+  <img src="assets/tui_comments.png" alt="独立评论区与楼中楼弹窗" width="32%" />
 </p>
 
 ## 一键安装 (推荐)

@@ -44,6 +44,12 @@ from xhh.tui.modals import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_xhh_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """隔离所有测试的配置与会话目录，避免污染用户 ~/.config/xhh."""
+    monkeypatch.setenv("XHH_CONFIG_DIR", str(tmp_path))
+
+
 def test_hkey_computation_and_params() -> None:
     h = compute_hkey("/bbs/app/feeds", 1700000001, "0123456789ABCDEF0123456789ABCDEF")
     assert len(h) == 7
@@ -198,15 +204,26 @@ def test_client_create_comment_and_post(tmp_path: Path, monkeypatch: pytest.Monk
 
             post_entry = [c for c in captured if c[0] == "/bbs/app/api/link/post"][0]
             assert post_entry[1]["topic_ids"] == "43"
+            assert post_entry[1]["heybox_id"] == "1001"
+            assert post_entry[1]["schedule_ts"] == "0"
+            assert post_entry[1]["draft"] == "0"
             assert json.loads(post_entry[1]["text"]) == [
                 {"type": "text", "text": "测试正文内容"},
                 {
                     "type": "img",
                     "url": "https://imgheybox.max-c.com/forum/2026/11/shot.png",
-                    "width": "64",
-                    "height": "32",
+                    "width": 64,
+                    "height": 32,
                 },
             ]
+
+            # 3. 验证同名跨域名 Cookie 不触发 httpx.CookieConflict
+            authed._client.cookies.set("user_pkey", "v1", domain=".xiaoheihe.cn")
+            authed._client.cookies.set("user_pkey", "v2", domain="api.xiaoheihe.cn")
+            updated_sess = authed._update_session_from_login_result(
+                {"profile": {"heybox_id": "1001", "nickname": "tester"}}
+            )
+            assert updated_sess.pkey == "pk_test"
 
     asyncio.run(_run())
 
