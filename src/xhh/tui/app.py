@@ -19,7 +19,7 @@ from textual.widgets import ContentSwitcher, OptionList, Static
 from textual.widgets.option_list import Option
 
 from xhh.client import HeyboxClient
-from xhh.config import AppConfig, SessionData
+from xhh.config import VALID_THEMES, AppConfig, SessionData
 from xhh.models import (
     CommentThread,
     HotRankItem,
@@ -28,6 +28,7 @@ from xhh.models import (
     TopicItem,
     format_count,
     format_time,
+    strip_emojis,
 )
 from xhh.tui.modals import (
     BossScreen,
@@ -155,14 +156,17 @@ class HeyboxApp(App[None]):
         Binding("P", "new_post", "发帖"),
         Binding("e", "expand_subcomments", "楼中楼"),
         Binding("b", "open_browser", "浏览器打开"),
+        Binding("t", "toggle_theme", "切换主题"),
         Binding("grave_accent", "boss_key", "老板键"),
     ]
 
-    def __init__(self, client: HeyboxClient | None = None) -> None:
+    def __init__(self, client: HeyboxClient | None = None, theme: str | None = None) -> None:
         super().__init__()
         self._external_client = client is not None
         self.client = client if client is not None else HeyboxClient()
         self.app_config = AppConfig.load()
+        norm_theme = (theme or "").strip().lower()
+        self._theme: str = norm_theme if norm_theme in VALID_THEMES else self.app_config.theme
 
         # 导航与列表状态
         self._sidebar_map: dict[str, dict[str, Any]] = {}
@@ -210,10 +214,32 @@ class HeyboxApp(App[None]):
 
         self._load_task: asyncio.Task[None] | None = None
 
+    @property
+    def is_stealth(self) -> bool:
+        return self._theme == "stealth"
+
+    @property
+    def theme_mode(self) -> str:
+        return self._theme
+
+    def _fmt_text(self, s: str) -> str:
+        return strip_emojis(s) if self.is_stealth else s
+
+    def _apply_theme_styles(self) -> None:
+        if self.is_stealth:
+            self.add_class("theme-stealth")
+        else:
+            self.remove_class("theme-stealth")
+        footer = self.query_one("#status-footer", Static)
+        if self.is_stealth:
+            footer.update("j/k:移 Enter:进 n/p:页 c:文/评 i:图 m:评 P:帖 /:搜 t:雅致 l:登 `:切 q:退")
+        else:
+            footer.update("j/k:移动 Enter:进 n/p:翻页 c:正文/评 i:图 m:评 P:帖 /:搜 t:极简 l:登 `:老板 q:退")
+
     def compose(self) -> ComposeResult:
         with Horizontal(id="top-bar"):
-            yield Static("📦 小黑盒 TUI", id="top-title")
-            yield Static("⚪ 未登录 [l:扫码登录]", id="top-account")
+            yield Static("❖ 小黑盒 TUI", id="top-title")
+            yield Static("○ 未登录 [l:登录]", id="top-account")
 
         with Horizontal(id="main-body"):
             with Vertical(id="sidebar"):
@@ -237,11 +263,12 @@ class HeyboxApp(App[None]):
                             yield OptionList(id="comment-list")
 
         yield Static(
-            "j/k:移动 Enter:进 n/p:翻页 c:正文/评 i:看图 m:评论 P:发帖 /:搜 l:登录 `:老板键 q:退",
+            "j/k:移动 Enter:进 n/p:翻页 c:正文/评 i:图 m:评 P:帖 /:搜 t:极简 l:登 `:老板 q:退",
             id="status-footer",
         )
 
     async def on_mount(self) -> None:
+        self._apply_theme_styles()
         self._update_account_banner()
         self._rebuild_sidebar()
         self._schedule_load(self._bootstrap())
@@ -339,69 +366,101 @@ class HeyboxApp(App[None]):
 
     def _update_account_banner(self) -> None:
         acct = self.query_one("#top-account", Static)
+        stealth = self.is_stealth
         if self.client.session.is_logged_in:
             lvl = f" (Lv.{self.client.session.level})" if self.client.session.level is not None else ""
-            name = self.client.session.nickname or self.client.session.heybox_id
-            acct.update(f"🟢 @{name}{lvl} [l:账号]")
+            raw_name = self.client.session.nickname or self.client.session.heybox_id
+            name = self._fmt_text(raw_name)
+            if stealth:
+                acct.update(f"auth:@{name}{lvl} (l)")
+            else:
+                acct.update(f"● @{name}{lvl} [l:账号]")
         else:
-            acct.update("⚪ 未登录 [l:扫码登录]")
+            acct.update("auth:guest (l)" if stealth else "○ 未登录 [l:登录]")
 
     def _update_top_title(self) -> None:
         title = self.query_one("#top-title", Static)
+        stealth = self.is_stealth
+        if stealth:
+            if self._view_mode == "feed":
+                title.update(f"xhh :: feed [p.{self._feed_page}]")
+            elif self._view_mode == "hot":
+                name = HOT_TAB_TITLES.get(self._current_hot_tab, "rank")
+                title.update(f"xhh :: {name} [p.{self._hot_page}]")
+            elif self._view_mode == "topic" and self._current_topic:
+                tab_str = "1.all/[2.hot]" if self._topic_is_hot else "[1.all]/2.hot"
+                sort_label = SORT_MODES[self._topic_sort_idx][1]
+                fav_mark = "*" if self.app_config.is_favorite(self._current_topic.topic_id) else ""
+                tname = self._fmt_text(self._current_topic.name)
+                title.update(f"xhh :: {fav_mark}{tname} | {tab_str} | {sort_label} [p.{self._feed_page}]")
+            elif self._view_mode == "search_posts":
+                title.update(f"xhh :: search [p.{self._feed_page}]")
+            return
+
         if self._view_mode == "feed":
-            title.update(f"📦 小黑盒 TUI  |  🔥 推荐 (首页) · 第 {self._feed_page} 页")
+            title.update(f"❖ 小黑盒 TUI  |  ▸ 推荐 (首页) · 第 {self._feed_page} 页")
         elif self._view_mode == "hot":
             name = HOT_TAB_TITLES.get(self._current_hot_tab, "热点榜单")
-            title.update(f"📦 小黑盒 TUI  |  {name} · 第 {self._hot_page} 页")
+            title.update(f"❖ 小黑盒 TUI  |  ▸ {name} · 第 {self._hot_page} 页")
         elif self._view_mode == "topic" and self._current_topic:
             tab_str = "1.综合 / [2.热点]" if self._topic_is_hot else "[1.综合] / 2.热点"
             sort_label = SORT_MODES[self._topic_sort_idx][1]
-            fav_mark = "⭐" if self.app_config.is_favorite(self._current_topic.topic_id) else ""
+            fav_mark = "★ " if self.app_config.is_favorite(self._current_topic.topic_id) else ""
             title.update(
-                f"📦 小黑盒 TUI  |  🎮 {fav_mark}{self._current_topic.name}  |  {tab_str}  |  {sort_label} · 第 {self._feed_page} 页"
+                f"❖ 小黑盒 TUI  |  ◈ {fav_mark}{self._current_topic.name}  |  {tab_str}  |  {sort_label} · 第 {self._feed_page} 页"
             )
         elif self._view_mode == "search_posts":
-            title.update(f"📦 小黑盒 TUI  |  🔍 搜索结果 · 第 {self._feed_page} 页")
+            title.update(f"❖ 小黑盒 TUI  |  ▸ 搜索结果 · 第 {self._feed_page} 页")
 
     def _rebuild_sidebar(self) -> None:
         sidebar = self.query_one("#sidebar-list", OptionList)
         prev_hl = sidebar.highlighted
         self._sidebar_map.clear()
         options: list[Option] = []
+        stealth = self.is_stealth
 
         nav_items = [
-            ("nav:feed", "🔥 推荐 (首页)", {"mode": "feed"}),
-            ("nav:hot:news", "📈 黑盒热议榜", {"mode": "hot", "tab": "news"}),
-            ("nav:hot:fusion", "🔍 热搜总榜", {"mode": "hot", "tab": "fusion"}),
-            ("nav:hot:gamev2", "🏆 热门游戏榜", {"mode": "hot", "tab": "gamev2"}),
+            ("nav:feed", "* 推荐" if stealth else "▸ 推荐 (首页)", {"mode": "feed"}),
+            ("nav:hot:news", "* 热议榜" if stealth else "▸ 黑盒热议榜", {"mode": "hot", "tab": "news"}),
+            ("nav:hot:fusion", "* 热搜榜" if stealth else "▸ 热搜总榜", {"mode": "hot", "tab": "fusion"}),
+            ("nav:hot:gamev2", "* 游戏榜" if stealth else "▸ 热门游戏榜", {"mode": "hot", "tab": "gamev2"}),
         ]
         for oid, label, meta in nav_items:
             self._sidebar_map[oid] = meta
             options.append(Option(label, id=oid))
 
-        options.append(Option("── ⭐ 收藏/订阅 ──", id="hdr:fav", disabled=True))
+        options.append(Option("-- 收藏 --" if stealth else "── ★ 收藏订阅 ──", id="hdr:fav", disabled=True))
         seen_ids: set[str] = set()
         fav_topics: list[TopicItem] = [
             TopicItem(topic_id=t["topic_id"], name=t["name"])
             for t in self.app_config.favorite_topics
-            if t.get("topic_id") and t.get("name")
+            if t.get("topic_id") and str(t.get("name") or "").strip()
         ]
         for t in [*fav_topics, *self._subscribed_topics]:
+            if not (t.name or "").strip():
+                continue
             tid = str(t.topic_id)
             if tid in seen_ids:
                 continue
             seen_ids.add(tid)
             oid = f"nav:topic:fav:{tid}"
             self._sidebar_map[oid] = {"mode": "topic", "topic": t}
-            options.append(Option(f"⭐ {t.name}", id=oid))
+            tname = _truncate_single_line(self._fmt_text(t.name), 18)
+            options.append(Option(f"+ {tname}" if stealth else f"★ {tname}", id=oid))
 
-        options.append(Option("── 🎮 热门板块 ──", id="hdr:hot", disabled=True))
+        options.append(Option("-- 热门板块 --" if stealth else "── ◈ 热门板块 ──", id="hdr:hot", disabled=True))
         for t in self._hot_topics:
+            if not (t.name or "").strip():
+                continue
             tid = str(t.topic_id)
             oid = f"nav:topic:hot:{tid}"
             self._sidebar_map[oid] = {"mode": "topic", "topic": t}
-            prefix = "★ " if self.app_config.is_favorite(tid) else "• "
-            options.append(Option(f"{prefix}{t.name}", id=oid))
+            tname = _truncate_single_line(self._fmt_text(t.name), 18)
+            if stealth:
+                prefix = "* " if self.app_config.is_favorite(tid) else "- "
+            else:
+                prefix = "★ " if self.app_config.is_favorite(tid) else "· "
+            options.append(Option(f"{prefix}{tname}", id=oid))
 
         sidebar.set_options(options)
         if prev_hl is not None and 0 <= prev_hl < len(options):
@@ -414,42 +473,74 @@ class HeyboxApp(App[None]):
         feed_list = self.query_one("#feed-list", OptionList)
         self._update_top_title()
         max_w = self._get_content_width()
+        stealth = self.is_stealth
 
         options: list[Option] = []
         for idx, post in enumerate(self._posts, start=1):
             t = Text()
             prefix_str = f"{idx:>2}. "
-            hot_badge = "[热] " if post.is_hot_post else ""
-            media_str = " 🎬" if post.has_video else (f" 🖼{post.image_count}" if post.image_count else "")
-            avail_title_w = max(12, max_w - cell_len(prefix_str) - cell_len(hot_badge) - cell_len(media_str))
-            short_title = _truncate_single_line(post.title, avail_title_w)
+            if stealth:
+                hot_badge = "[hot] " if post.is_hot_post else ""
+                media_str = " [vid]" if post.has_video else (f" [img:{post.image_count}]" if post.image_count else "")
+            else:
+                hot_badge = "[热] " if post.is_hot_post else ""
+                media_str = " [视频]" if post.has_video else (f" [图{post.image_count}]" if post.image_count else "")
 
-            t.append(prefix_str, style="bold cyan")
-            if hot_badge:
-                t.append(hot_badge, style="bold red")
-            t.append(short_title, style="bold white")
-            if media_str:
-                t.append(media_str, style="magenta" if post.has_video else "blue")
+            title_raw = self._fmt_text(post.title)
+            avail_title_w = max(12, max_w - cell_len(prefix_str) - cell_len(hot_badge) - cell_len(media_str))
+            short_title = _truncate_single_line(title_raw, avail_title_w)
+
+            if stealth:
+                t.append(prefix_str, style="#687078")
+                if hot_badge:
+                    t.append(hot_badge, style="#8b949e")
+                t.append(short_title, style="#b0b8c0")
+                if media_str:
+                    t.append(media_str, style="#687078")
+            else:
+                t.append(prefix_str, style="#7aa2f7")
+                if hot_badge:
+                    t.append(hot_badge, style="bold #f7768e")
+                t.append(short_title, style="bold #c0caf5")
+                if media_str:
+                    t.append(media_str, style="#bb9af7" if post.has_video else "#7dcfff")
 
             meta_line = Text()
-            if post.author:
-                meta_line.append(f"@{post.author}", style="yellow")
-            if post.topic_name:
-                sep = " · " if post.author else ""
-                meta_line.append(f"{sep}[{post.topic_name}]", style="cyan")
-            stats_prefix = " · " if (post.author or post.topic_name) else ""
-            meta_line.append(
-                f"{stats_prefix}👍{format_count(post.up)} ⚡{format_count(post.award_num)} 💬{format_count(post.comment_num)}",
-                style="green",
-            )
-            tm = post.create_str or format_time(post.create_at)
-            if tm:
-                meta_line.append(f" · {tm}", style="dim")
+            author_s = self._fmt_text(post.author) if post.author else ""
+            topic_s = self._fmt_text(post.topic_name) if post.topic_name else ""
+            if stealth:
+                if author_s:
+                    meta_line.append(f"@{author_s}", style="#687078")
+                if topic_s:
+                    sep = " | " if author_s else ""
+                    meta_line.append(f"{sep}{topic_s}", style="#687078")
+                stats_prefix = " | " if (author_s or topic_s) else ""
+                meta_line.append(
+                    f"{stats_prefix}up:{format_count(post.up)} awd:{format_count(post.award_num)} cmt:{format_count(post.comment_num)}",
+                    style="#687078",
+                )
+                tm = post.create_str or format_time(post.create_at)
+                if tm:
+                    meta_line.append(f" | {tm}", style="#687078")
+            else:
+                if author_s:
+                    meta_line.append(f"@{author_s}", style="#a9b1d6")
+                if topic_s:
+                    sep = " · " if author_s else ""
+                    meta_line.append(f"{sep}[{topic_s}]", style="#7aa2f7")
+                stats_prefix = " · " if (author_s or topic_s) else ""
+                meta_line.append(
+                    f"{stats_prefix}赞 {format_count(post.up)} · 电 {format_count(post.award_num)} · 评 {format_count(post.comment_num)}",
+                    style="#787c99",
+                )
+                tm = post.create_str or format_time(post.create_at)
+                if tm:
+                    meta_line.append(f" · {tm}", style="#565f89")
 
             meta_plain = _truncate_single_line(meta_line.plain, max_w - 4)
             t.append("\n    ")
             if len(meta_plain) < len(meta_line.plain):
-                t.append(meta_plain, style="dim")
+                t.append(meta_plain, style="#687078" if stealth else "#565f89")
             else:
                 t.append_text(meta_line)
 
@@ -463,13 +554,18 @@ class HeyboxApp(App[None]):
             feed_list.highlighted = 0
             feed_list.scroll_home(animate=False)
 
-        page_info = f"第 {self._feed_page} 页 (本页 {len(self._posts)}/{self._last_rendered_feed_page_size} 条)"
+        page_info = (
+            f"p.{self._feed_page} ({len(self._posts)}/{self._last_rendered_feed_page_size})"
+            if stealth
+            else f"第 {self._feed_page} 页 ({len(self._posts)}/{self._last_rendered_feed_page_size} 条)"
+        )
         nav_hint = ("n:下一页 " if self._has_more_feeds else "") + ("p:上一页" if self._feed_page > 1 else "")
         if status_msg:
-            subbar.update(status_msg)
+            subbar.update(self._fmt_text(status_msg))
         elif self._view_mode == "topic" and self._current_topic:
+            tname = self._fmt_text(self._current_topic.name)
             subbar.update(
-                f"「{self._current_topic.name}」· {page_info} | 1:综合 2:热点 s:排序 f:收藏 {nav_hint}".strip()
+                f"{tname} · {page_info} | 1:综合 2:热点 s:排序 f:收藏 {nav_hint}".strip()
             )
         else:
             subbar.update(f"{page_info} | Enter:阅读 {nav_hint} r:刷新".strip())
@@ -485,22 +581,33 @@ class HeyboxApp(App[None]):
         self._has_more_feeds = self._hot_page < max_page
         self._update_top_title()
         max_w = self._get_content_width()
+        stealth = self.is_stealth
 
         options: list[Option] = []
         for item in page_items:
             t = Text()
             rank_str = f"#{item.rank:<2} "
-            tag_str = f" [{item.tag}]" if item.tag else ""
-            game_str = " 🎮" if item.item_type == "game" else ""
+            tag_raw = self._fmt_text(item.tag) if item.tag else ""
+            tag_str = f" [{tag_raw}]" if tag_raw else ""
+            game_str = (" [game]" if stealth else " [游戏]") if item.item_type == "game" else ""
+            title_raw = self._fmt_text(item.title)
             short_title = _truncate_single_line(
-                item.title, max(12, max_w - cell_len(rank_str) - cell_len(tag_str) - cell_len(game_str))
+                title_raw, max(12, max_w - cell_len(rank_str) - cell_len(tag_str) - cell_len(game_str))
             )
-            t.append(rank_str, style="bold red" if item.rank <= 3 else "bold cyan")
-            t.append(short_title, style="bold white")
-            if tag_str:
-                t.append(tag_str, style="bold magenta")
-            if game_str:
-                t.append(game_str, style="dim cyan")
+            if stealth:
+                t.append(rank_str, style="#687078")
+                t.append(short_title, style="#b0b8c0")
+                if tag_str:
+                    t.append(tag_str, style="#8b949e")
+                if game_str:
+                    t.append(game_str, style="#687078")
+            else:
+                t.append(rank_str, style="bold #f7768e" if item.rank <= 3 else "#7aa2f7")
+                t.append(short_title, style="bold #c0caf5")
+                if tag_str:
+                    t.append(tag_str, style="#bb9af7")
+                if game_str:
+                    t.append(game_str, style="#787c99")
             options.append(Option(t, id=f"hot:{item.rank - 1}"))
 
         if not options:
@@ -524,9 +631,9 @@ class HeyboxApp(App[None]):
             self._recommended_api_offset = 0
             self._recommended_api_has_more = True
             self._posts = []
-            self.query_one("#list-subbar", Static).update("⏳ 正在加载首页推荐流...")
+            self.query_one("#list-subbar", Static).update("正在加载首页推荐流...")
         else:
-            self.query_one("#list-subbar", Static).update(f"⏳ 正在切换到第 {page} 页...")
+            self.query_one("#list-subbar", Static).update(f"正在切换到第 {page} 页...")
 
         need_end = page * page_size
         seen_ids = {p.linkid for p in self._recommended_buffer}
@@ -548,7 +655,7 @@ class HeyboxApp(App[None]):
                     self._recommended_api_has_more = False
                     break
         except Exception as exc:
-            self.query_one("#list-subbar", Static).update(f"❌ 加载失败: {exc} (按 r 重试)")
+            self.query_one("#list-subbar", Static).update(f"加载失败: {exc} (按 r 重试)")
             return
 
         start = (page - 1) * page_size
@@ -567,11 +674,11 @@ class HeyboxApp(App[None]):
         self._current_hot_tab = tab_type
         self._hot_page = 1
         self.query_one("#content-switcher", ContentSwitcher).current = "list-pane"
-        self.query_one("#list-subbar", Static).update("⏳ 正在加载热榜...")
+        self.query_one("#list-subbar", Static).update("正在加载热榜...")
         try:
             grouped = await self.client.get_hot_rankings()
         except Exception as exc:
-            self.query_one("#list-subbar", Static).update(f"❌ 加载热榜失败: {exc}")
+            self.query_one("#list-subbar", Static).update(f"加载热榜失败: {exc}")
             return
         self._hot_items = grouped.get(tab_type) or []
         self._render_hot_list()
@@ -590,9 +697,9 @@ class HeyboxApp(App[None]):
             self._topic_api_lastval = ""
             self._topic_api_has_more = True
             self._posts = []
-            self.query_one("#list-subbar", Static).update(f"⏳ 正在加载「{topic.name}」...")
+            self.query_one("#list-subbar", Static).update(f"正在加载「{self._fmt_text(topic.name)}」...")
         else:
-            self.query_one("#list-subbar", Static).update(f"⏳ 正在加载「{topic.name}」第 {page} 页...")
+            self.query_one("#list-subbar", Static).update(f"正在加载「{self._fmt_text(topic.name)}」第 {page} 页...")
 
         sort_key = SORT_MODES[self._topic_sort_idx][0]
         need_end = page * page_size
@@ -625,7 +732,7 @@ class HeyboxApp(App[None]):
                     self._topic_api_has_more = False
                     break
         except Exception as exc:
-            self.query_one("#list-subbar", Static).update(f"❌ 加载板块失败: {exc}")
+            self.query_one("#list-subbar", Static).update(f"加载板块失败: {exc}")
             return
 
         start = (page - 1) * page_size
@@ -648,7 +755,7 @@ class HeyboxApp(App[None]):
         self._posts = self._search_posts_buffer[start : start + page_size]
         self._has_more_feeds = self._feed_page < max_page
         self._render_posts_list(
-            f"🔍 搜索结果 第 {self._feed_page}/{max_page} 页 (本页 {len(self._posts)} 条) | Enter:阅读 n/p:翻页"
+            f"搜索结果 第 {self._feed_page}/{max_page} 页 ({len(self._posts)} 条) | Enter:阅读 n/p:翻页"
         )
 
     def _update_detail_tabbar(self) -> None:
@@ -660,20 +767,35 @@ class HeyboxApp(App[None]):
         total_pg = max(1, (total_est + page_size - 1) // page_size) if total_est else 1
         sort_lbl = COMMENT_SORT_MODES[self._comment_sort_idx][1]
         owner_tag = " [只看楼主]" if self._owner_only else ""
+        stealth = self.is_stealth
 
         t = Text()
-        if self._detail_tab == "body":
-            t.append(" [ 📄 正文 ] ", style="bold black on #58a6ff")
-            t.append(f"  💬 评论 ({cmt_cnt})", style="dim")
-            img_tip = " i:看图" if (detail and detail.images) else ""
-            t.append(f"  |  c:看评论 m:发评论{img_tip} n/p:翻页 Esc:返回", style="dim")
+        if stealth:
+            if self._detail_tab == "body":
+                t.append(" [ body ] ", style="bold #101214 on #8b949e")
+                t.append(f"  cmt ({cmt_cnt})", style="#687078")
+                img_tip = " i:img" if (detail and detail.images) else ""
+                t.append(f"  |  c:cmt m:reply{img_tip} n/p:page Esc:back", style="#687078")
+            else:
+                t.append(" body ", style="#687078")
+                t.append(
+                    f" [ cmt ({cmt_cnt}) p.{self._comment_page}/{total_pg}{owner_tag} ] ",
+                    style="bold #101214 on #8b949e",
+                )
+                t.append(f"  |  c:body w:reply s:{sort_lbl} o:op e:sub n/p:page", style="#687078")
         else:
-            t.append(" 📄 正文 ", style="dim")
-            t.append(
-                f" [ 💬 评论 ({cmt_cnt}) · 第 {self._comment_page}/{total_pg} 页{owner_tag} ] ",
-                style="bold black on #f0883e",
-            )
-            t.append(f"  |  c:正文 w:回复 s:{sort_lbl} o:楼主 e:楼中楼 n/p:翻页", style="dim")
+            if self._detail_tab == "body":
+                t.append(" [ 正文 ] ", style="bold #1a1b26 on #7aa2f7")
+                t.append(f"  评论 ({cmt_cnt})", style="#787c99")
+                img_tip = " i:看图" if (detail and detail.images) else ""
+                t.append(f"  |  c:看评论 m:发评论{img_tip} n/p:翻页 Esc:返回", style="#787c99")
+            else:
+                t.append(" 正文 ", style="#787c99")
+                t.append(
+                    f" [ 评论 ({cmt_cnt}) · 第 {self._comment_page}/{total_pg} 页{owner_tag} ] ",
+                    style="bold #1a1b26 on #bb9af7",
+                )
+                t.append(f"  |  c:正文 w:回复 s:{sort_lbl} o:楼主 e:楼中楼 n/p:翻页", style="#787c99")
         tabbar.update(t)
 
     def _switch_detail_tab(self, tab: str) -> None:
@@ -730,41 +852,65 @@ class HeyboxApp(App[None]):
         self._comment_page = page
         self._detail_threads = self._comment_buffer[start : start + page_size]
 
+    def _render_comment_list_options(self) -> None:
         cmt_list = self.query_one("#comment-list", OptionList)
         max_w = self._get_content_width()
+        stealth = self.is_stealth
         cmt_options: list[Option] = []
 
         for idx, th in enumerate(self._detail_threads, start=1):
             r = th.root
             ct = Text()
             hdr = Text()
-            hdr.append(f"{idx:>2}. ", style="bold cyan")
-            if r.floor_num:
-                hdr.append(f"#{r.floor_num}楼 ", style="cyan")
-            if r.is_cy:
-                hdr.append("★神评 ", style="bold red")
-            if r.is_top:
-                hdr.append("📌置顶 ", style="bold magenta")
-            if r.is_link_owner:
-                hdr.append("👑楼主 ", style="bold yellow")
-            hdr.append(f"@{r.username}", style="bold yellow")
-            if r.user_level is not None:
-                hdr.append(f"(Lv.{r.user_level})", style="dim")
-            if r.ip_location:
-                hdr.append(f"·{r.ip_location}", style="dim")
-            hdr.append(f" 👍{r.up}", style="green")
-            sub_cnt = max(r.child_num, len(th.children))
-            if sub_cnt > 0:
-                hdr.append(f" [↳{sub_cnt}回复]", style="bold cyan")
+            uname = self._fmt_text(r.username)
+            if stealth:
+                hdr.append(f"{idx:>2}. ", style="#687078")
+                if r.floor_num:
+                    hdr.append(f"#{r.floor_num} ", style="#687078")
+                if r.is_cy:
+                    hdr.append("[hot] ", style="#8b949e")
+                if r.is_top:
+                    hdr.append("[top] ", style="#8b949e")
+                if r.is_link_owner:
+                    hdr.append("[op] ", style="#8b949e")
+                hdr.append(f"@{uname}", style="#8b949e")
+                if r.user_level is not None:
+                    hdr.append(f"(Lv.{r.user_level})", style="#687078")
+                if r.ip_location:
+                    hdr.append(f"|{r.ip_location}", style="#687078")
+                hdr.append(f" up:{r.up}", style="#687078")
+                sub_cnt = max(r.child_num, len(th.children))
+                if sub_cnt > 0:
+                    hdr.append(f" [+{sub_cnt}]", style="#8b949e")
+            else:
+                hdr.append(f"{idx:>2}. ", style="#7aa2f7")
+                if r.floor_num:
+                    hdr.append(f"#{r.floor_num}楼 ", style="#7dcfff")
+                if r.is_cy:
+                    hdr.append("[神评] ", style="bold #f7768e")
+                if r.is_top:
+                    hdr.append("[置顶] ", style="#bb9af7")
+                if r.is_link_owner:
+                    hdr.append("[楼主] ", style="#e0af68")
+                hdr.append(f"@{uname}", style="#e0af68")
+                if r.user_level is not None:
+                    hdr.append(f"(Lv.{r.user_level})", style="#787c99")
+                if r.ip_location:
+                    hdr.append(f"·{r.ip_location}", style="#787c99")
+                hdr.append(f" 赞{r.up}", style="#9ece6a")
+                sub_cnt = max(r.child_num, len(th.children))
+                if sub_cnt > 0:
+                    hdr.append(f" [↳{sub_cnt}回复]", style="#7aa2f7")
 
             hdr_plain = _truncate_single_line(hdr.plain, max_w)
             if len(hdr_plain) < len(hdr.plain):
-                ct.append(hdr_plain, style="bold white")
+                ct.append(hdr_plain, style="#8b949e" if stealth else "bold #c0caf5")
             else:
                 ct.append_text(hdr)
 
-            body_line = _truncate_single_line(r.text or "[图片评论]", max(12, max_w - 4))
-            ct.append(f"\n    {body_line}", style="white")
+            r_body = self._fmt_text(r.text) if r.text else ("[img]" if stealth else "[图片评论]")
+            body_line = _truncate_single_line(r_body or "[img]", max(12, max_w - 4))
+            ct.append(f"\n    {body_line}", style="#b0b8c0" if stealth else "#c0caf5")
             cmt_options.append(Option(ct, id=f"cmt:{idx - 1}"))
 
         if not cmt_options:
@@ -776,6 +922,109 @@ class HeyboxApp(App[None]):
             cmt_list.scroll_home(animate=False)
 
         self._update_detail_tabbar()
+
+    async def _show_comment_page(self, page: int) -> None:
+        if not self._current_detail:
+            return
+        page_size = self._get_comment_page_size()
+        self._last_rendered_comment_page_size = page_size
+        need_end = page * page_size
+        seen_cids = {th.root.commentid for th in self._comment_buffer}
+        cmt_sort = COMMENT_SORT_MODES[self._comment_sort_idx][0]
+
+        while len(self._comment_buffer) < need_end and self._comment_api_has_more:
+            next_api_page = self._comment_api_page + 1
+            try:
+                more = await self.client.get_post_detail(
+                    link_id=self._current_detail.linkid,
+                    page=next_api_page,
+                    limit=20,
+                    owner_only=self._owner_only,
+                    sort_filter=cmt_sort,
+                )
+            except Exception:
+                break
+            self._comment_api_page = next_api_page
+            added = 0
+            for th in more.comments:
+                if th.root.commentid not in seen_cids:
+                    seen_cids.add(th.root.commentid)
+                    self._comment_buffer.append(th)
+                    added += 1
+            self._comment_api_has_more = (
+                more.has_more_floors or next_api_page < more.total_page
+            ) and added > 0
+            if not more.comments:
+                self._comment_api_has_more = False
+                break
+
+        start = (page - 1) * page_size
+        while start >= len(self._comment_buffer) and page > 1:
+            page -= 1
+            start = (page - 1) * page_size
+
+        self._comment_page = page
+        self._detail_threads = self._comment_buffer[start : start + page_size]
+        self._render_comment_list_options()
+
+    def _render_detail_header_and_body(self) -> None:
+        detail = self._current_detail
+        if not detail:
+            return
+        stealth = self.is_stealth
+        max_w = self._get_content_width()
+
+        title_s = self._fmt_text(detail.title)
+        author_s = self._fmt_text(detail.author)
+        topic_s = self._fmt_text(detail.topic_name) if detail.topic_name else ""
+        if stealth:
+            stats_tail = (
+                f" | @{author_s} up:{format_count(detail.up)} awd:{format_count(detail.award_num)} cmt:{format_count(detail.comment_num)}"
+            )
+            topic_prefix = f"[{topic_s}] " if topic_s else ""
+            avail_t = max(12, max_w - cell_len(topic_prefix) - cell_len(stats_tail))
+            hdr = Text()
+            if topic_prefix:
+                hdr.append(topic_prefix, style="#687078")
+            hdr.append(_truncate_single_line(title_s, avail_t), style="#b0b8c0")
+            hdr.append(stats_tail, style="#687078")
+        else:
+            stats_tail = (
+                f" | @{author_s} 赞{format_count(detail.up)} 电{format_count(detail.award_num)} 评{format_count(detail.comment_num)}"
+            )
+            topic_prefix = f"[{topic_s}] " if topic_s else ""
+            avail_t = max(12, max_w - cell_len(topic_prefix) - cell_len(stats_tail))
+            hdr = Text()
+            if topic_prefix:
+                hdr.append(topic_prefix, style="#7aa2f7")
+            hdr.append(_truncate_single_line(title_s, avail_t), style="bold #c0caf5")
+            hdr.append(stats_tail, style="#787c99")
+        self.query_one("#detail-header", Static).update(hdr)
+
+        meta_parts = [f"@{author_s}"]
+        if detail.author_level is not None:
+            meta_parts.append(f"Lv.{detail.author_level}")
+        if detail.ip_location:
+            meta_parts.append(detail.ip_location)
+        tm = format_time(detail.create_at)
+        if tm:
+            meta_parts.append(tm)
+        body_text = Text()
+        body_text.append(f"{title_s}\n", style="#b0b8c0" if stealth else "bold #c0caf5")
+        if stealth:
+            body_text.append(
+                f"{' | '.join(meta_parts)}  |  up:{detail.up}  awd:{detail.award_num}  cmt:{detail.comment_num}  fav:{detail.favour_count}\n",
+                style="#687078",
+            )
+        else:
+            body_text.append(
+                f"{' · '.join(meta_parts)}  |  赞 {detail.up}  电 {detail.award_num}  评 {detail.comment_num}  藏 {detail.favour_count}\n",
+                style="#e0af68",
+            )
+        body_text.append(("-" if stealth else "─") * 50 + "\n\n", style="#687078" if stealth else "#565f89")
+        body_content = self._fmt_text(detail.body) if detail.body else "(暂无文本正文)"
+        body_text.append(body_content or "(暂无文本正文)", style="#b0b8c0" if stealth else "#c0caf5")
+        self.query_one("#detail-body", Static).update(body_text)
 
     async def _open_post_detail(
         self,
@@ -794,7 +1043,7 @@ class HeyboxApp(App[None]):
             self._comment_sort_idx = 0
 
         self.query_one("#content-switcher", ContentSwitcher).current = "detail-pane"
-        self.query_one("#detail-header", Static).update(f"⏳ 正在加载帖子 #{link_id} ...")
+        self.query_one("#detail-header", Static).update(f"正在加载帖子 #{link_id} ...")
         if reset_tab:
             self.query_one("#detail-body", Static).update("")
             self._switch_detail_tab("body")
@@ -811,7 +1060,7 @@ class HeyboxApp(App[None]):
                 fallback_imgs=fallback_imgs,
             )
         except Exception as exc:
-            self.query_one("#detail-header", Static).update(f"❌ 加载帖子失败: {exc} (按 Esc 返回)")
+            self.query_one("#detail-header", Static).update(f"加载帖子失败: {exc} (按 Esc 返回)")
             return
 
         self._current_detail = detail
@@ -820,36 +1069,7 @@ class HeyboxApp(App[None]):
         self._comment_api_has_more = detail.has_more_floors or (detail.total_page > 1)
         self._comment_page = 1
 
-        # 紧凑单行 Header
-        max_w = self._get_content_width()
-        stats_tail = f" | @{detail.author} 👍{format_count(detail.up)} ⚡{format_count(detail.award_num)} 💬{format_count(detail.comment_num)}"
-        topic_prefix = f"[{detail.topic_name}] " if detail.topic_name else ""
-        avail_t = max(12, max_w - cell_len(topic_prefix) - cell_len(stats_tail))
-        hdr = Text()
-        if topic_prefix:
-            hdr.append(topic_prefix, style="bold cyan")
-        hdr.append(_truncate_single_line(detail.title, avail_t), style="bold white")
-        hdr.append(stats_tail, style="green")
-        self.query_one("#detail-header", Static).update(hdr)
-
-        # 正文与完整元信息
-        meta_parts = [f"@{detail.author}"]
-        if detail.author_level is not None:
-            meta_parts.append(f"Lv.{detail.author_level}")
-        if detail.ip_location:
-            meta_parts.append(detail.ip_location)
-        tm = format_time(detail.create_at)
-        if tm:
-            meta_parts.append(tm)
-        body_text = Text()
-        body_text.append(f"{detail.title}\n", style="bold white")
-        body_text.append(
-            f"{' · '.join(meta_parts)}  |  👍 {detail.up}  ⚡ {detail.award_num}  💬 {detail.comment_num}  ⭐ {detail.favour_count}\n",
-            style="yellow",
-        )
-        body_text.append("─" * 50 + "\n\n", style="dim")
-        body_text.append(detail.body or "(暂无文本正文)")
-        self.query_one("#detail-body", Static).update(body_text)
+        self._render_detail_header_and_body()
         if reset_tab:
             self.query_one("#post-body-scroll", VerticalScroll).scroll_home(animate=False)
 
@@ -858,7 +1078,8 @@ class HeyboxApp(App[None]):
         if detail.images:
             pills_bar.display = True
             for idx, img_url in enumerate(detail.images):
-                await pills_bar.mount(ImagePill(f"🖼 图{idx + 1}", idx, img_url))
+                lbl = f"[img:{idx + 1}]" if self.is_stealth else f"[图{idx + 1}]"
+                await pills_bar.mount(ImagePill(lbl, idx, img_url))
         else:
             pills_bar.display = False
 
@@ -917,7 +1138,7 @@ class HeyboxApp(App[None]):
             await self._load_topic_feeds(topic, page=1, reset=True)
             return
 
-        self.query_one("#list-subbar", Static).update(f"⏳ 正在检索「{item.title}」相关内容...")
+        self.query_one("#list-subbar", Static).update(f"正在检索「{self._fmt_text(item.title)}」相关内容...")
         res = await self.client.search(item.title)
         if res.get("posts"):
             self._view_mode = "search_posts"
@@ -1039,8 +1260,8 @@ class HeyboxApp(App[None]):
             )
             self._rebuild_sidebar()
             self._update_top_title()
-            msg = "⭐ 已收藏板块" if added else "已取消收藏板块"
-            self.query_one("#list-subbar", Static).update(f"{msg}: {self._current_topic.name}")
+            msg = "已收藏板块" if added else "已取消收藏板块"
+            self.query_one("#list-subbar", Static).update(f"{msg}: {self._fmt_text(self._current_topic.name)}")
 
     def action_next_page(self) -> None:
         if self._in_detail_view() and self._current_detail:
@@ -1242,6 +1463,31 @@ class HeyboxApp(App[None]):
                 self.action_refresh_view()
 
         self.push_screen(NewPostModal(self.client, default_topic=default_topic), _after_publish)
+
+    def action_toggle_theme(self) -> None:
+        next_theme = "stealth" if self._theme == "elegant" else "elegant"
+        self._theme = self.app_config.set_theme(next_theme)
+        self._apply_theme_styles()
+        self._update_account_banner()
+        self._rebuild_sidebar()
+
+        if self._view_mode == "hot":
+            self._render_hot_list()
+        elif self._view_mode == "search_posts":
+            self._render_search_posts_page(self._feed_page)
+        else:
+            tip = (
+                "theme -> stealth (极简低调模式，按 t 切回)"
+                if self.is_stealth
+                else "已切换至雅致主题 (按 t 切换极简低调模式)"
+            )
+            self._render_posts_list(status_msg=tip)
+
+        if self._current_detail:
+            self._render_detail_header_and_body()
+            for pill in self.query(ImagePill):
+                pill.update(f"[img:{pill.image_index + 1}]" if self.is_stealth else f"[图{pill.image_index + 1}]")
+            self._render_comment_list_options()
 
     def action_boss_key(self) -> None:
         self.push_screen(BossScreen())

@@ -19,8 +19,15 @@ from textual.widgets.option_list import Option
 from xhh.client import HeyboxClient
 from xhh.config import SessionData
 from xhh.image import fetch_image_to_cache, open_image_quicklook, render_image_file_rich
-from xhh.models import CommentReply, CommentThread, format_count, format_time
+from xhh.models import CommentReply, CommentThread, format_count, format_time, strip_emojis
 from xhh.qr import render_qr_rich, save_qr_html
+
+
+def _is_stealth(screen: ModalScreen[Any]) -> bool:
+    try:
+        return bool(getattr(screen.app, "is_stealth", False))
+    except Exception:
+        return False
 
 
 class QRLoginModal(ModalScreen[SessionData | None]):
@@ -46,10 +53,10 @@ class QRLoginModal(ModalScreen[SessionData | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="qr-dialog"):
-            yield Static("📱 小黑盒扫码登录", id="qr-title")
+            yield Static("小黑盒扫码登录", id="qr-title")
             with VerticalScroll(id="qr-scroll"):
                 yield Static("正在生成登录二维码...", id="qr-box")
-            yield Static("⏳ 初始化中...  |  b:浏览器  m:切尺寸  r:刷新  Esc:关闭", id="qr-status")
+            yield Static("初始化中...  |  b:浏览器  m:切尺寸  r:刷新  Esc:关闭", id="qr-status")
 
     def on_mount(self) -> None:
         self._refresh_banner()
@@ -62,11 +69,18 @@ class QRLoginModal(ModalScreen[SessionData | None]):
 
     def _refresh_banner(self) -> None:
         title = self.query_one("#qr-title", Static)
+        stealth = _is_stealth(self)
         if self.client.session.is_logged_in:
-            lvl = f"(Lv.{self.client.session.level})" if self.client.session.level is not None else ""
-            title.update(f"📱 小黑盒扫码登录  |  🟢 @{self.client.session.nickname}{lvl}")
+            lvl = f" (Lv.{self.client.session.level})" if self.client.session.level is not None else ""
+            if stealth:
+                title.update(f"qr-login | @{self.client.session.nickname}{lvl}")
+            else:
+                title.update(f"❖ 扫码登录  |  ● @{self.client.session.nickname}{lvl}")
         else:
-            title.update("📱 小黑盒扫码登录  |  ⚪ 未登录")
+            if stealth:
+                title.update("qr-login | auth: guest")
+            else:
+                title.update("❖ 扫码登录  |  ○ 未登录")
 
     def _start_qr_flow(self) -> None:
         if self._poll_task and not self._poll_task.done():
@@ -78,19 +92,19 @@ class QRLoginModal(ModalScreen[SessionData | None]):
         qr_box = self.query_one("#qr-box", Static)
         status_lbl = self.query_one("#qr-status", Static)
         qr_box.update("正在获取二维码...")
-        status_lbl.update("⏳ 请求官方登录二维码中...")
+        status_lbl.update("请求官方登录二维码中...")
 
         try:
             qr_info = await self.client.get_qrcode()
         except Exception as exc:
             qr_box.update("获取失败")
-            status_lbl.update(f"❌ {exc}（按 r 重试）")
+            status_lbl.update(f"获取失败: {exc}（按 r 重试）")
             return
 
         self._current_qr_url = qr_info["qr_url"]
         qr_box.update(render_qr_rich(self._current_qr_url, border=1, compact=self._compact_qr))
         hint_tail = "b:浏览器 m:切尺寸 r:刷新 u:登出 Esc:关"
-        status_lbl.update(f"⏳ 等待 App 扫码 | {hint_tail}")
+        status_lbl.update(f"等待 App 扫码 | {hint_tail}")
 
         qr_token = qr_info["qr_token"]
         while not self._stop_polling:
@@ -100,30 +114,30 @@ class QRLoginModal(ModalScreen[SessionData | None]):
             try:
                 res = await self.client.poll_qr_state(qr_token)
             except Exception as exc:
-                status_lbl.update(f"⚠️ 轮询波动: {exc}")
+                status_lbl.update(f"轮询波动: {exc}")
                 continue
 
             state = res.get("state")
             if state == "waiting":
-                status_lbl.update(f"⏳ 等待 App 扫码 | {hint_tail}")
+                status_lbl.update(f"等待 App 扫码 | {hint_tail}")
             elif state == "scanned":
-                status_lbl.update("📱 已扫码！请在手机端点击「确认登录」")
+                status_lbl.update("已扫码，请在手机端点击「确认登录」")
             elif state == "confirmed":
                 session = res["session"]
                 self._logged_in_session = session
                 self._refresh_banner()
-                status_lbl.update(f"✅ 登录成功！欢迎 @{session.nickname}")
+                status_lbl.update(f"登录成功，欢迎 @{session.nickname}")
                 await asyncio.sleep(0.8)
                 self.dismiss(session)
                 return
             elif state == "expired":
-                status_lbl.update("⌛ 二维码已过期，按 r 刷新 | Esc:关闭")
+                status_lbl.update("二维码已过期，按 r 刷新 | Esc:关闭")
                 return
             elif state == "requires_2fa":
-                status_lbl.update(f"⚠️ {res.get('msg')}")
+                status_lbl.update(f"{res.get('msg')}")
                 return
             else:
-                status_lbl.update(f"❌ {res.get('msg', '登录失败')}（按 r 重试）")
+                status_lbl.update(f"{res.get('msg', '登录失败')}（按 r 重试）")
                 return
 
     def action_refresh_qr(self) -> None:
@@ -142,7 +156,7 @@ class QRLoginModal(ModalScreen[SessionData | None]):
             return
         html_path = save_qr_html(self._current_qr_url)
         webbrowser.open(html_path.as_uri())
-        self.query_one("#qr-status", Static).update(f"🌐 已在浏览器打开高清二维码，请扫码确认...")
+        self.query_one("#qr-status", Static).update("已在浏览器打开高清二维码，请扫码确认...")
 
     async def action_logout_account(self) -> None:
         if not self.client.session.is_logged_in:
@@ -150,7 +164,7 @@ class QRLoginModal(ModalScreen[SessionData | None]):
             return
         await self.client.logout()
         self._refresh_banner()
-        self.query_one("#qr-status", Static).update("🚪 已退出登录（可扫码重新登录）")
+        self.query_one("#qr-status", Static).update("已退出登录（可扫码重新登录）")
 
     def action_close_modal(self) -> None:
         self._stop_polling = True
@@ -171,8 +185,9 @@ class SearchModal(ModalScreen[dict[str, Any] | None]):
         self._search_task: asyncio.Task[None] | None = None
 
     def compose(self) -> ComposeResult:
+        title = "search [topic / post]" if _is_stealth(self) else "搜索游戏板块 / 帖子 (输入关键词后回车，↑/↓ 选择)"
         with Vertical(id="search-dialog"):
-            yield Static("🔍 搜索游戏板块 / 帖子 (输入关键词后回车，↑/↓ 选择)", id="search-title")
+            yield Static(title, id="search-title")
             yield Input(placeholder="输入游戏名或关键词，例如: 黑神话、CS2、Steam...", id="search-input")
             yield Static("提示: 可直接匹配热门游戏板块；登录后可搜索全站帖子", id="search-status")
             yield OptionList(id="search-results")
@@ -195,14 +210,15 @@ class SearchModal(ModalScreen[dict[str, Any] | None]):
     async def _perform_search(self, query: str) -> None:
         status_lbl = self.query_one("#search-status", Static)
         results_list = self.query_one("#search-results", OptionList)
-        status_lbl.update(f"⏳ 正在搜索「{query}」...")
+        status_lbl.update(f"正在搜索「{query}」...")
 
         try:
             res = await self.client.search(query)
         except Exception as exc:
-            status_lbl.update(f"❌ 搜索失败: {exc}")
+            status_lbl.update(f"搜索失败: {exc}")
             return
 
+        stealth = _is_stealth(self)
         self._entries.clear()
         options: list[Option] = []
 
@@ -210,19 +226,26 @@ class SearchModal(ModalScreen[dict[str, Any] | None]):
             opt_id = f"topic:{idx}"
             self._entries[opt_id] = {"type": "topic", "topic": topic}
             prompt = Text.assemble(
-                ("🎮 [板块] ", "bold cyan"),
-                (topic.name, "bold white"),
-                (f"  (topic_id: {topic.topic_id})", "dim"),
+                ("[topic] " if stealth else "[板块] ", "#8b949e" if stealth else "bold #7aa2f7"),
+                (strip_emojis(topic.name) if stealth else topic.name, "#b0b8c0" if stealth else "bold #c0caf5"),
+                (f"  (id: {topic.topic_id})", "#687078" if stealth else "#787c99"),
             )
             options.append(Option(prompt, id=opt_id))
 
         for idx, post in enumerate(res.get("posts") or []):
             opt_id = f"post:{idx}"
             self._entries[opt_id] = {"type": "post", "post": post}
+            post_title = strip_emojis(post.title) if stealth else post.title
+            author = strip_emojis(post.author) if stealth else post.author
+            stats_s = (
+                f"  @{author} | up:{format_count(post.up)} cmt:{format_count(post.comment_num)}"
+                if stealth
+                else f"  @{author} · 赞 {format_count(post.up)} · 评 {format_count(post.comment_num)}"
+            )
             prompt = Text.assemble(
-                ("📝 [帖子] ", "bold green"),
-                (post.title, "white"),
-                (f"  @{post.author} · 👍{format_count(post.up)} · 💬{format_count(post.comment_num)}", "dim"),
+                ("[post] " if stealth else "[帖子] ", "#8b949e" if stealth else "bold #9ece6a"),
+                (post_title, "#b0b8c0" if stealth else "#c0caf5"),
+                (stats_s, "#687078" if stealth else "#787c99"),
             )
             options.append(Option(prompt, id=opt_id))
 
@@ -230,8 +253,8 @@ class SearchModal(ModalScreen[dict[str, Any] | None]):
             opt_id = f"sug:{idx}"
             self._entries[opt_id] = {"type": "suggestion", "query": sug}
             prompt = Text.assemble(
-                ("💡 [热词] ", "yellow"),
-                (sug, "white"),
+                ("[key] " if stealth else "[热词] ", "#687078" if stealth else "#e0af68"),
+                (strip_emojis(sug) if stealth else sug, "#b0b8c0" if stealth else "#c0caf5"),
             )
             options.append(Option(prompt, id=opt_id))
 
@@ -284,12 +307,16 @@ class SubCommentModal(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         root = self.thread.root
+        stealth = _is_stealth(self)
+        root_author = strip_emojis(root.username) if stealth else root.username
+        root_body = strip_emojis(root.text) if stealth else root.text
+        up_lbl = f"up:{root.up}" if stealth else f"赞 {root.up}"
         root_text = Text.assemble(
-            (f"#{root.floor_num}楼 ", "bold cyan"),
-            (f"@{root.username}", "bold yellow"),
-            (f" (Lv.{root.user_level})" if root.user_level else "", "dim"),
-            (f" · 👍{root.up}\n", "green"),
-            (root.text or "[图片评论]", "white"),
+            (f"#{root.floor_num}楼 ", "#8b949e" if stealth else "bold #7aa2f7"),
+            (f"@{root_author}", "#b0b8c0" if stealth else "bold #e0af68"),
+            (f" (Lv.{root.user_level})" if root.user_level else "", "#687078" if stealth else "#787c99"),
+            (f" · {up_lbl}\n", "#687078" if stealth else "#9ece6a"),
+            (root_body or "[图片评论]", "#b0b8c0" if stealth else "#c0caf5"),
         )
         with Vertical(id="subcomment-dialog"):
             yield Static(root_text, id="subcomment-root")
@@ -304,11 +331,11 @@ class SubCommentModal(ModalScreen[None]):
     async def _fetch_page(self, page: int) -> None:
         lst = self.query_one("#subcomment-list", OptionList)
         hint = self.query_one("#subcomment-hint", Static)
-        hint.update("⏳ 正在加载楼中楼...")
+        hint.update("正在加载楼中楼...")
         try:
             res = await self.client.get_sub_comments(self.link_id, self.thread.root.commentid, page=page)
         except Exception as exc:
-            hint.update(f"❌ 加载失败: {exc}  |  Esc: 关闭")
+            hint.update(f"加载失败: {exc}  |  Esc: 关闭")
             return
 
         new_replies: list[CommentReply] = res["comments"]
@@ -319,26 +346,33 @@ class SubCommentModal(ModalScreen[None]):
         else:
             self._replies.extend(new_replies)
 
+        stealth = _is_stealth(self)
         options: list[Option] = []
         for r in self._replies:
             t = Text()
-            t.append(f"@{r.username}", style="bold cyan")
+            uname = strip_emojis(r.username) if stealth else r.username
+            t.append(f"@{uname}", style="#b0b8c0" if stealth else "bold #7aa2f7")
             if r.user_level is not None:
-                t.append(f" (Lv.{r.user_level})", style="dim")
+                t.append(f" (Lv.{r.user_level})", style="#687078" if stealth else "#787c99")
             if r.reply_to_user:
-                t.append(" 回复 ", style="dim")
-                t.append(f"@{r.reply_to_user}", style="yellow")
+                target_u = strip_emojis(r.reply_to_user) if stealth else r.reply_to_user
+                t.append(" 回复 ", style="#687078" if stealth else "#787c99")
+                t.append(f"@{target_u}", style="#8b949e" if stealth else "#e0af68")
             meta_parts: list[str] = []
             if r.ip_location:
                 meta_parts.append(r.ip_location)
             tm = format_time(r.create_at)
             if tm:
                 meta_parts.append(tm)
-            meta_parts.append(f"👍{r.up}")
-            t.append(f"  [{' · '.join(meta_parts)}]\n", style="dim")
-            t.append(r.text or "[图片]", style="white")
+            meta_parts.append(f"up:{r.up}" if stealth else f"赞 {r.up}")
+            t.append(f"  [{' · '.join(meta_parts)}]\n", style="#687078" if stealth else "#787c99")
+            r_text = strip_emojis(r.text) if stealth else r.text
+            t.append(r_text or "[图片]", style="#b0b8c0" if stealth else "#c0caf5")
             if r.imgs:
-                t.append(f"  [🖼 x{len(r.imgs)}]", style="magenta")
+                t.append(
+                    f"  [img x{len(r.imgs)}]" if stealth else f"  [图 x{len(r.imgs)}]",
+                    style="#687078" if stealth else "#7dcfff",
+                )
             options.append(Option(t))
 
         if not options:
@@ -407,7 +441,7 @@ class ImagePreviewModal(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="img-preview-dialog"):
             yield Static("", id="img-preview-title")
-            yield Static("⏳ 正在加载图片...", id="img-preview-box")
+            yield Static("正在加载图片...", id="img-preview-box")
             yield Static("←/→:切换  Space/i:高清原图弹窗  b:浏览器  Esc/点击外部:关闭", id="img-preview-hint")
 
     def on_mount(self) -> None:
@@ -429,15 +463,16 @@ class ImagePreviewModal(ModalScreen[None]):
     async def _load_current(self) -> None:
         title_lbl = self.query_one("#img-preview-title", Static)
         box = self.query_one("#img-preview-box", Static)
+        stealth = _is_stealth(self)
         if not self.images:
-            title_lbl.update("🖼 图片预览")
+            title_lbl.update("preview" if stealth else "❖ 图片预览")
             box.update("暂无可预览的图片")
             return
 
         total = len(self.images)
         url = self.images[self.index]
-        title_lbl.update(f"🖼 图片预览 ({self.index + 1}/{total})")
-        box.update("⏳ 正在下载并解码图片...")
+        title_lbl.update(f"img ({self.index + 1}/{total})" if stealth else f"❖ 图片预览 ({self.index + 1}/{total})")
+        box.update("正在下载并解码图片...")
 
         try:
             path = self._cached_paths.get(self.index)
@@ -449,7 +484,7 @@ class ImagePreviewModal(ModalScreen[None]):
             rendered = render_image_file_rich(path, max_width=max_w, max_height=max_h)
             box.update(rendered)
         except Exception as exc:
-            box.update(f"❌ 图片加载失败: {exc}\n(按 b 可直接在浏览器打开原图)")
+            box.update(f"图片加载失败: {exc}\n(按 b 可直接在浏览器打开原图)")
 
     def action_prev_image(self) -> None:
         if len(self.images) > 1:
@@ -508,7 +543,7 @@ class CommentModal(ModalScreen[dict[str, Any] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="comment-dialog"):
-            yield Static("💬 发表评论", id="comment-title")
+            yield Static("发表评论" if _is_stealth(self) else "❖ 发表评论", id="comment-title")
             yield Static(self.target_label, id="comment-target")
             yield Input(placeholder="输入评论内容，按 Enter 发送（支持 [cube_滑稽] 等表情）...", id="comment-input")
             yield Static("Enter: 发送  |  Esc: 取消", id="comment-status")
@@ -522,10 +557,10 @@ class CommentModal(ModalScreen[dict[str, Any] | None]):
         text = event.value.strip()
         status = self.query_one("#comment-status", Static)
         if not text:
-            status.update("⚠️ 评论内容不能为空")
+            status.update("评论内容不能为空")
             return
         self._submitting = True
-        status.update("⏳ 正在发送评论...")
+        status.update("正在发送评论...")
         try:
             res = await self.client.create_comment(
                 link_id=self.link_id,
@@ -535,9 +570,9 @@ class CommentModal(ModalScreen[dict[str, Any] | None]):
             )
         except Exception as exc:
             self._submitting = False
-            status.update(f"❌ {exc}")
+            status.update(f"发送失败: {exc}")
             return
-        status.update("✅ 评论发送成功！")
+        status.update("评论发送成功")
         self.dismiss(res)
 
     def action_close_modal(self) -> None:
@@ -560,7 +595,7 @@ class NewPostModal(ModalScreen[dict[str, Any] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="newpost-dialog"):
-            yield Static("📝 发布新帖 (Ctrl+S 提交 / Esc 取消)", id="newpost-title")
+            yield Static("new-post (Ctrl+S submit / Esc cancel)" if _is_stealth(self) else "❖ 发布新帖 (Ctrl+S 提交 / Esc 取消)", id="newpost-title")
             yield Input(value=self.default_topic, placeholder="目标板块名或 topic_id（默认: 盒友杂谈）", id="post-topic-input")
             yield Input(placeholder="输入帖子标题...", id="post-title-input")
             yield Input(placeholder="可选：附加图片本地路径或 URL，多张用英文逗号分隔...", id="post-images-input")
@@ -589,26 +624,26 @@ class NewPostModal(ModalScreen[dict[str, Any] | None]):
         status = self.query_one("#newpost-status", Static)
 
         if not title:
-            status.update("⚠️ 请输入帖子标题")
+            status.update("请输入帖子标题")
             self.query_one("#post-title-input", Input).focus()
             return
         if not content:
-            status.update("⚠️ 请输入帖子正文")
+            status.update("请输入帖子正文")
             self.query_one("#post-content-area", TextArea).focus()
             return
 
         imgs = [p.strip() for p in images_raw.split(",") if p.strip()] if images_raw else None
         self._submitting = True
-        status.update("⏳ 正在解析板块并上传图片/发布..." if imgs else "⏳ 正在解析板块并发布...")
+        status.update("正在解析板块并上传图片/发布..." if imgs else "正在解析板块并发布...")
         try:
             topic = await self.client.resolve_topic(topic_raw)
             topic_id = topic.topic_id if topic is not None else (topic_raw if topic_raw.isdigit() else "7214")
             res = await self.client.create_post(title=title, content=content, topic_id=topic_id, imgs=imgs)
         except Exception as exc:
             self._submitting = False
-            status.update(f"❌ {exc}")
+            status.update(f"发布失败: {exc}")
             return
-        status.update("✅ 发帖成功！")
+        status.update("发帖成功")
         self.dismiss(res)
 
     def action_close_modal(self) -> None:

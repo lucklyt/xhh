@@ -62,6 +62,28 @@ CUBE_EMOJI_MAP: dict[str, str] = {
 
 _CUBE_RE = re.compile(r"\[cube_([^\]]+)\]")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
+_IMG_TAG_RE = re.compile(r"\[\s*🖼\s*图片\s*(\d+)\s*\]")
+_VIDEO_TAG_RE = re.compile(r"\[\s*🎬\s*视频片段\s*\]")
+_EMOJI_STRIP_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0000231A-\U000023FA"
+    "\U00002B05-\U00002B55"
+    "\U0000FE0E\U0000FE0F\U0000200D\U000020E3"
+    "]+"
+)
+
+
+def strip_emojis(text: str) -> str:
+    """在极简低调主题下移除彩色 Emoji，并将媒体占位符转为纯 ASCII 标签."""
+    if not text:
+        return ""
+    cleaned = _IMG_TAG_RE.sub(r"[img:\1]", text)
+    cleaned = _VIDEO_TAG_RE.sub("[video]", cleaned)
+    cleaned = cleaned.replace("[🎬 该帖包含视频，阅读时可按 b 在浏览器中播放原帖]", "[video: 按 b 在浏览器播放]")
+    cleaned = _EMOJI_STRIP_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def translate_emojis(text: str) -> str:

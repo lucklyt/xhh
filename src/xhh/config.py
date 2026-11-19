@@ -9,6 +9,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+DEFAULT_THEME = "elegant"
+VALID_THEMES: tuple[str, str] = ("elegant", "stealth")
+
 DEFAULT_FAVORITE_TOPICS: list[dict[str, Any]] = [
     {"topic_id": 7214, "name": "盒友杂谈"},
     {"topic_id": 425422, "name": "Steam"},
@@ -89,11 +92,12 @@ class SessionData:
 
 @dataclass
 class AppConfig:
-    """用户偏好配置（收藏的游戏板块等）."""
+    """用户偏好配置（收藏的游戏板块、TUI 主题等）."""
 
     favorite_topics: list[dict[str, Any]] = field(
         default_factory=lambda: [dict(item) for item in DEFAULT_FAVORITE_TOPICS]
     )
+    theme: str = DEFAULT_THEME
 
     def save(self) -> Path:
         path = get_config_dir() / "config.json"
@@ -114,7 +118,15 @@ class AppConfig:
         favs = raw.get("favorite_topics")
         if not isinstance(favs, list):
             favs = [dict(item) for item in DEFAULT_FAVORITE_TOPICS]
-        return cls(favorite_topics=favs)
+        raw_theme = str(raw.get("theme") or DEFAULT_THEME).strip().lower()
+        theme = raw_theme if raw_theme in VALID_THEMES else DEFAULT_THEME
+        return cls(favorite_topics=favs, theme=theme)
+
+    def set_theme(self, theme: str) -> str:
+        norm = theme.strip().lower()
+        self.theme = norm if norm in VALID_THEMES else DEFAULT_THEME
+        self.save()
+        return self.theme
 
     def is_favorite(self, topic_id: int | str) -> bool:
         tid = str(topic_id)

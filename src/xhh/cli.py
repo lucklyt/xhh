@@ -484,6 +484,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="小黑盒社区终端 TUI 应用（同时支持快捷 CLI 子命令，支持扫码登录、悬停看图、发评论与发帖）",
     )
     parser.add_argument("-V", "--version", action="version", version=f"xhh {__version__}")
+    parser.add_argument(
+        "--theme",
+        dest="tui_theme",
+        choices=["elegant", "stealth"],
+        default=None,
+        help="指定 TUI 界面主题: elegant(雅致) / stealth(极简低调)",
+    )
     parser.add_argument("--post", dest="direct_post_id", help="不进入界面直接查看指定帖子 link_id")
     parser.add_argument("-f", "--floors", dest="direct_floors", help="配合 --post 使用，指定评论楼层范围 (如 1-10)")
     parser.add_argument("-j", "--json", dest="direct_json", action="store_true", help="配合 --post 使用，以 JSON 结构输出")
@@ -498,7 +505,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("tui", help="启动全屏交互式 TUI (默认)")
+    p_tui = sub.add_parser("tui", help="启动全屏交互式 TUI (默认)")
+    p_tui.add_argument(
+        "--theme",
+        dest="sub_tui_theme",
+        choices=["elegant", "stealth"],
+        default=None,
+        help="指定 TUI 界面主题: elegant(雅致) / stealth(极简低调)",
+    )
 
     p_login = sub.add_parser("login", help="在终端显示二维码并扫码登录小黑盒")
     p_login.add_argument("--dry-run", action="store_true", help="仅获取并渲染二维码及检查一次状态后退出")
@@ -607,7 +621,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command is None or args.command == "tui":
         from xhh.tui.app import HeyboxApp
 
-        HeyboxApp().run()
+        chosen_theme = getattr(args, "sub_tui_theme", None) or getattr(args, "tui_theme", None)
+        HeyboxApp(theme=chosen_theme).run()
         return 0
 
     want_json = bool(getattr(args, "as_json", False))

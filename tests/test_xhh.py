@@ -28,6 +28,7 @@ from xhh.models import (
     format_count,
     format_post_content,
     parse_floor_range,
+    strip_emojis,
     translate_emojis,
 )
 from xhh.qr import render_qr_half_blocks, render_qr_rich, save_qr_html
@@ -226,6 +227,10 @@ def test_config_and_session_isolation(tmp_path: Path, monkeypatch: pytest.Monkey
     assert not SessionData.load().is_logged_in
 
     cfg = AppConfig.load()
+    assert cfg.theme == "elegant"
+    assert cfg.set_theme("stealth") == "stealth"
+    assert AppConfig.load().theme == "stealth"
+    assert cfg.set_theme("elegant") == "elegant"
     assert len(cfg.favorite_topics) >= 1
     added = cfg.toggle_favorite(733575, "影之刃零")
     assert added is True
@@ -237,6 +242,8 @@ def test_config_and_session_isolation(tmp_path: Path, monkeypatch: pytest.Monkey
 
 def test_models_emoji_and_content_parsing() -> None:
     assert translate_emojis("你好[cube_滑稽][cube_未知]") == "你好😏[滑稽][未知]"
+    assert strip_emojis("🔥今天真不错😄 [🖼 图片 1] [🎬 视频片段]") == "今天真不错 [img:1] [video]"
+    assert strip_emojis("你好😏[滑稽]") == "你好[滑稽]"
     assert clean_inline_html('回复<a href="heybox://abc">@小明</a><br>测试[cube_点赞]') == "回复@小明\n测试👍[点赞]"
     assert format_count(1520) == "1.5k"
     assert format_count(24500) == "2.5w"
@@ -806,6 +813,28 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.press("s")
             await pilot.pause(0.2)
             assert app._topic_sort_idx == 1
+
+            # 9. 按 t 实时切换双主题 (elegant <-> stealth) 并持久化
+            assert app.theme_mode == "elegant"
+            assert not app.has_class("theme-stealth")
+            await pilot.press("t")
+            await pilot.pause(0.1)
+            assert app.theme_mode == "stealth"
+            assert app.has_class("theme-stealth")
+            assert AppConfig.load().theme == "stealth"
+            assert "xhh ::" in str(app.query_one("#top-title", Static).render())
+
+            # 进入帖子查看 stealth 下图片胶囊变为 [img:1] 且切回 elegant 变为 [图1]
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            pill = app.query(ImagePill).first()
+            assert "[img:1]" in str(pill.render())
+            await pilot.press("t")
+            await pilot.pause(0.1)
+            assert app.theme_mode == "elegant"
+            assert not app.has_class("theme-stealth")
+            assert AppConfig.load().theme == "elegant"
+            assert "[图1]" in str(pill.render())
 
     asyncio.run(_run())
 
