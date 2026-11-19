@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xhh-cli"
+version = "0.1.0"
+description = "小黑盒社区终端客户端 (CLI + TUI)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.27.0",
+    "rich>=13.7.0",
+    "textual>=0.80.0",
+    "qrcode>=7.4.2",
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/lucklyt/xhh"
+Repository = "https://github.com/lucklyt/xhh"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+xhh = "xhh.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+xhh = ["tui/*.tcss"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
