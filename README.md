@@ -126,6 +126,21 @@ xhh publish -t "图文推广标题" -c "正文内容" -i assets/tui_feed.png -i 
 | `` ` `` (反引号) | **老板键 (Boss Key)**：瞬间切换为程序编译测试日志界面 |
 | `Esc` / `Backspace` / `q` | 详情页返回帖子列表；主界面按 `q` 退出 |
 
+## Agent Skill（供其他 AI Agent 使用）
+
+仓库内置标准 Agent Skill（[.agents/skills/xhh](.agents/skills/xhh/SKILL.md)），让 Claude Code、Codex、Antigravity、Cursor 等 AI Agent 可直接通过 `--json` 模式查帖、按楼层看评论、扫码登录、发图文帖以及评论/回复楼中楼：
+
+```bash
+# 方式 A：使用 skills CLI 安装
+npx skills add lucklyt/xhh
+
+# 方式 B：克隆仓库后软链接到对应 Agent 的全局 Skills 目录
+ln -sfn "$(pwd)/.agents/skills/xhh" ~/.agents/skills/xhh          # 通用标准目录
+ln -sfn "$(pwd)/.agents/skills/xhh" ~/.gemini/config/skills/xhh   # Antigravity
+ln -sfn "$(pwd)/.agents/skills/xhh" ~/.claude/skills/xhh          # Claude Code
+ln -sfn "$(pwd)/.agents/skills/xhh" ~/.codex/skills/xhh           # Codex
+```
+
 ## 会话与配置文件
 
 - 登录会话：`~/.config/xhh/session.json`（权限 `0600`，可通过 `XHH_CONFIG_DIR` 覆盖目录）
