@@ -1,4 +1,4 @@
-"""小黑盒 CLI 单元测试与集成测试."""
+"""小黑盒 TUI 单元测试与集成测试."""
 
 from __future__ import annotations
 
@@ -620,6 +620,9 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             assert switcher.current == "detail-pane"
             assert sub_switcher.current == "detail-body-view"
             assert "测试帖子完整标题" in str(app.query_one("#detail-header", Static).render())
+            body_rendered = str(app.query_one("#detail-body", Static).render())
+            assert "帖子图片列表" not in body_rendered
+            assert "https://img.example.com/a.jpg" not in body_rendered
 
             pills = app.query(ImagePill)
             assert len(pills) == 1

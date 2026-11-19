@@ -849,11 +849,6 @@ class HeyboxApp(App[None]):
         )
         body_text.append("─" * 50 + "\n\n", style="dim")
         body_text.append(detail.body or "(暂无文本正文)")
-        if detail.images:
-            body_text.append("\n\n─── 🖼 帖子图片列表 (按 b 可在浏览器查看原图) ───\n", style="bold cyan")
-            for idx, img_url in enumerate(detail.images, start=1):
-                body_text.append(f"  [图{idx}] ", style="bold blue")
-                body_text.append(f"{img_url}\n", style="dim underline")
         self.query_one("#detail-body", Static).update(body_text)
         if reset_tab:
             self.query_one("#post-body-scroll", VerticalScroll).scroll_home(animate=False)
