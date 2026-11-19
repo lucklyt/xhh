@@ -821,8 +821,10 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.pause(0.1)
             assert app.theme_mode == "stealth"
             assert app.has_class("theme-stealth")
+            assert app.title == "zsh"
             assert AppConfig.load().theme == "stealth"
             assert "xhh ::" in str(app.query_one("#top-title", Static).render())
+            assert "极简" not in str(app.query_one("#status-footer", Static).render())
 
             # 进入帖子查看 stealth 下图片胶囊变为 [img:1] 且切回 elegant 变为 [图1]
             await pilot.press("enter")
@@ -833,6 +835,7 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.pause(0.1)
             assert app.theme_mode == "elegant"
             assert not app.has_class("theme-stealth")
+            assert app.title == "xhh"
             assert AppConfig.load().theme == "elegant"
             assert "[图1]" in str(pill.render())
 

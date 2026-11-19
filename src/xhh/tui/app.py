@@ -228,13 +228,15 @@ class HeyboxApp(App[None]):
     def _apply_theme_styles(self) -> None:
         if self.is_stealth:
             self.add_class("theme-stealth")
+            self.title = "zsh"
         else:
             self.remove_class("theme-stealth")
+            self.title = "xhh"
         footer = self.query_one("#status-footer", Static)
         if self.is_stealth:
-            footer.update("j/k:移 Enter:进 n/p:页 c:文/评 i:图 m:评 P:帖 /:搜 t:雅致 l:登 `:切 q:退")
+            footer.update("j/k:移 Enter:进 n/p:页 c:文/评 i:图 m:评 P:帖 /:搜 t:主题 l:登 `:切 q:退")
         else:
-            footer.update("j/k:移动 Enter:进 n/p:翻页 c:正文/评 i:图 m:评 P:帖 /:搜 t:极简 l:登 `:老板 q:退")
+            footer.update("j/k:移动 Enter:进 n/p:翻页 c:正文/评 i:图 m:评 P:帖 /:搜 t:主题 l:登 `:老板 q:退")
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top-bar"):
@@ -263,7 +265,7 @@ class HeyboxApp(App[None]):
                             yield OptionList(id="comment-list")
 
         yield Static(
-            "j/k:移动 Enter:进 n/p:翻页 c:正文/评 i:图 m:评 P:帖 /:搜 t:极简 l:登 `:老板 q:退",
+            "j/k:移动 Enter:进 n/p:翻页 c:正文/评 i:图 m:评 P:帖 /:搜 t:主题 l:登 `:老板 q:退",
             id="status-footer",
         )
 
@@ -1476,12 +1478,7 @@ class HeyboxApp(App[None]):
         elif self._view_mode == "search_posts":
             self._render_search_posts_page(self._feed_page)
         else:
-            tip = (
-                "theme -> stealth (极简低调模式，按 t 切回)"
-                if self.is_stealth
-                else "已切换至雅致主题 (按 t 切换极简低调模式)"
-            )
-            self._render_posts_list(status_msg=tip)
+            self._render_posts_list()
 
         if self._current_detail:
             self._render_detail_header_and_body()
