@@ -47,6 +47,7 @@ Screen {
     background: #161720;
     border: none;
     padding: 0 1;
+    scrollbar-size: 0 0;
 }
 
 #content-switcher {

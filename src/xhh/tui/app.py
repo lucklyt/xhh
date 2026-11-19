@@ -172,11 +172,13 @@ class HeyboxApp(App[None]):
         self._sidebar_map: dict[str, dict[str, Any]] = {}
         self._hot_topics: list[TopicItem] = []
         self._subscribed_topics: list[TopicItem] = []
-        self._view_mode: str = "feed"  # "feed" | "hot" | "topic" | "search_posts"
+        self._view_mode: str = "feed"  # "feed" | "hot" | "topics" | "topic" | "search_posts"
         self._current_hot_tab: str = "news"
         self._current_topic: TopicItem | None = None
         self._topic_is_hot: bool = False
         self._topic_sort_idx: int = 0
+        self._topics_page: int = 1
+        self._topics_dir_items: list[TopicItem] = []
 
         # 缓冲与自适应分页状态
         self._feed_page: int = 1
@@ -300,6 +302,8 @@ class HeyboxApp(App[None]):
                     self._render_search_posts_page(self._feed_page)
                 elif self._view_mode == "hot" and self._hot_items:
                     self._render_hot_list()
+                elif self._view_mode == "topics" and self._hot_topics:
+                    self._render_topics_directory()
 
     def _schedule_load(self, coro: Any) -> None:
         if self._load_task and not self._load_task.done():
@@ -389,6 +393,8 @@ class HeyboxApp(App[None]):
             elif self._view_mode == "hot":
                 name = HOT_TAB_TITLES.get(self._current_hot_tab, "rank")
                 title.update(f"xhh :: {name} [p.{self._hot_page}]")
+            elif self._view_mode == "topics":
+                title.update(f"xhh :: topics [p.{self._topics_page}]")
             elif self._view_mode == "topic" and self._current_topic:
                 tab_str = "1.all/[2.hot]" if self._topic_is_hot else "[1.all]/2.hot"
                 sort_label = SORT_MODES[self._topic_sort_idx][1]
@@ -404,6 +410,8 @@ class HeyboxApp(App[None]):
         elif self._view_mode == "hot":
             name = HOT_TAB_TITLES.get(self._current_hot_tab, "热点榜单")
             title.update(f"❖ 小黑盒 TUI  |  ▸ {name} · 第 {self._hot_page} 页")
+        elif self._view_mode == "topics":
+            title.update(f"❖ 小黑盒 TUI  |  ◈ 热门板块 · 第 {self._topics_page} 页")
         elif self._view_mode == "topic" and self._current_topic:
             tab_str = "1.综合 / [2.热点]" if self._topic_is_hot else "[1.综合] / 2.热点"
             sort_label = SORT_MODES[self._topic_sort_idx][1]
@@ -426,6 +434,7 @@ class HeyboxApp(App[None]):
             ("nav:hot:news", "* 热议榜" if stealth else "▸ 黑盒热议榜", {"mode": "hot", "tab": "news"}),
             ("nav:hot:fusion", "* 热搜榜" if stealth else "▸ 热搜总榜", {"mode": "hot", "tab": "fusion"}),
             ("nav:hot:gamev2", "* 游戏榜" if stealth else "▸ 热门游戏榜", {"mode": "hot", "tab": "gamev2"}),
+            ("nav:topics", "* 热门板块" if stealth else "▸ 热门板块", {"mode": "topics"}),
         ]
         for oid, label, meta in nav_items:
             self._sidebar_map[oid] = meta
@@ -449,20 +458,6 @@ class HeyboxApp(App[None]):
             self._sidebar_map[oid] = {"mode": "topic", "topic": t}
             tname = _truncate_single_line(self._fmt_text(t.name), 18)
             options.append(Option(f"+ {tname}" if stealth else f"★ {tname}", id=oid))
-
-        options.append(Option("-- 热门板块 --" if stealth else "── ◈ 热门板块 ──", id="hdr:hot", disabled=True))
-        for t in self._hot_topics:
-            if not (t.name or "").strip():
-                continue
-            tid = str(t.topic_id)
-            oid = f"nav:topic:hot:{tid}"
-            self._sidebar_map[oid] = {"mode": "topic", "topic": t}
-            tname = _truncate_single_line(self._fmt_text(t.name), 18)
-            if stealth:
-                prefix = "* " if self.app_config.is_favorite(tid) else "- "
-            else:
-                prefix = "★ " if self.app_config.is_favorite(tid) else "· "
-            options.append(Option(f"{prefix}{tname}", id=oid))
 
         sidebar.set_options(options)
         if prev_hl is not None and 0 <= prev_hl < len(options):
@@ -620,6 +615,69 @@ class HeyboxApp(App[None]):
             feed_list.scroll_home(animate=False)
         tab_name = HOT_TAB_TITLES.get(self._current_hot_tab, "热榜")
         subbar.update(f"{tab_name} 第 {self._hot_page}/{max_page} 页 | Enter:直达板块/搜索 n/p:翻页 r:刷新")
+
+    async def _open_topics_directory(self, page: int = 1) -> None:
+        self._view_mode = "topics"
+        self._topics_page = page
+        self.query_one("#content-switcher", ContentSwitcher).current = "list-pane"
+        if not self._hot_topics:
+            self.query_one("#list-subbar", Static).update("正在加载热门板块...")
+            await self._load_categories()
+        self._render_topics_directory()
+
+    def _render_topics_directory(self) -> None:
+        subbar = self.query_one("#list-subbar", Static)
+        feed_list = self.query_one("#feed-list", OptionList)
+        self._topics_dir_items = [t for t in self._hot_topics if (t.name or "").strip()]
+        page_size = self._get_hot_page_size()
+        self._last_rendered_feed_page_size = page_size
+        max_page = max(1, (len(self._topics_dir_items) + page_size - 1) // page_size)
+        self._topics_page = max(1, min(self._topics_page, max_page))
+        start = (self._topics_page - 1) * page_size
+        page_items = self._topics_dir_items[start : start + page_size]
+        self._has_more_feeds = self._topics_page < max_page
+        self._update_top_title()
+        max_w = self._get_content_width()
+        stealth = self.is_stealth
+
+        options: list[Option] = []
+        for offset_i, topic in enumerate(page_items):
+            abs_idx = start + offset_i
+            tid = str(topic.topic_id)
+            is_fav = self.app_config.is_favorite(tid)
+            t = Text()
+            rank_str = f"{abs_idx + 1:>2}. "
+            fav_tag = (" * " if is_fav else "   ") if stealth else (" ★ " if is_fav else "   ")
+            id_tail = f"  (id:{tid})"
+            name_raw = self._fmt_text(topic.name)
+            short_name = _truncate_single_line(
+                name_raw, max(12, max_w - cell_len(rank_str) - cell_len(fav_tag) - cell_len(id_tail))
+            )
+            if stealth:
+                t.append(rank_str, style="#687078")
+                t.append(fav_tag, style="#8b949e")
+                t.append(short_name, style="#b0b8c0")
+                t.append(id_tail, style="#687078")
+            else:
+                t.append(rank_str, style="#7aa2f7")
+                t.append(fav_tag, style="#e0af68" if is_fav else "#565f89")
+                t.append(short_name, style="bold #c0caf5")
+                t.append(id_tail, style="#787c99")
+            options.append(Option(t, id=f"topic_dir:{abs_idx}"))
+
+        if not options:
+            options.append(Option(Text("暂无热门板块数据", style="dim"), disabled=True))
+        feed_list.set_options(options)
+        if options and not options[0].disabled:
+            feed_list.highlighted = 0
+            feed_list.scroll_home(animate=False)
+
+        if stealth:
+            subbar.update(f"topics p.{self._topics_page}/{max_page} ({len(self._topics_dir_items)}) | Enter:进 n/p:页 r:刷")
+        else:
+            subbar.update(
+                f"热门板块 第 {self._topics_page}/{max_page} 页 (共 {len(self._topics_dir_items)} 个) | Enter:进入板块 n/p:翻页 r:刷新"
+            )
 
     async def _load_recommended_feeds(self, page: int = 1, reset: bool = False) -> None:
         self._view_mode = "feed"
@@ -1103,6 +1161,8 @@ class HeyboxApp(App[None]):
                 self._schedule_load(self._load_recommended_feeds(page=1, reset=True))
             elif mode == "hot":
                 self._schedule_load(self._load_hot_ranking(meta["tab"]))
+            elif mode == "topics":
+                self._schedule_load(self._open_topics_directory(page=1))
             elif mode == "topic":
                 self._schedule_load(self._load_topic_feeds(meta["topic"], page=1, reset=True))
             self.query_one("#feed-list", OptionList).focus()
@@ -1119,6 +1179,10 @@ class HeyboxApp(App[None]):
                 idx = int(opt_id.split(":")[1])
                 if 0 <= idx < len(self._hot_items):
                     self._schedule_load(self._activate_hot_item(self._hot_items[idx]))
+            elif opt_id.startswith("topic_dir:"):
+                idx = int(opt_id.split(":")[1])
+                if 0 <= idx < len(self._topics_dir_items):
+                    self._schedule_load(self._load_topic_feeds(self._topics_dir_items[idx], page=1, reset=True))
             return
 
         if list_id == "comment-list":
@@ -1285,6 +1349,12 @@ class HeyboxApp(App[None]):
                 self._render_hot_list()
             return
 
+        if self._view_mode == "topics":
+            if self._has_more_feeds:
+                self._topics_page += 1
+                self._render_topics_directory()
+            return
+
         if self._view_mode == "search_posts":
             if self._has_more_feeds:
                 self._render_search_posts_page(self._feed_page + 1)
@@ -1312,6 +1382,12 @@ class HeyboxApp(App[None]):
                 self._render_hot_list()
             return
 
+        if self._view_mode == "topics":
+            if self._topics_page > 1:
+                self._topics_page -= 1
+                self._render_topics_directory()
+            return
+
         if self._view_mode == "search_posts":
             if self._feed_page > 1:
                 self._render_search_posts_page(self._feed_page - 1)
@@ -1337,6 +1413,9 @@ class HeyboxApp(App[None]):
             self._schedule_load(self._load_recommended_feeds(page=1, reset=True))
         elif self._view_mode == "hot":
             self._schedule_load(self._load_hot_ranking(self._current_hot_tab))
+        elif self._view_mode == "topics":
+            self._hot_topics = []
+            self._schedule_load(self._open_topics_directory(page=1))
         elif self._view_mode == "topic" and self._current_topic:
             self._schedule_load(self._load_topic_feeds(self._current_topic, page=1, reset=True))
 
@@ -1475,6 +1554,8 @@ class HeyboxApp(App[None]):
 
         if self._view_mode == "hot":
             self._render_hot_list()
+        elif self._view_mode == "topics":
+            self._render_topics_directory()
         elif self._view_mode == "search_posts":
             self._render_search_posts_page(self._feed_page)
         else:

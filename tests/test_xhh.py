@@ -792,8 +792,25 @@ def test_tui_interactive_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             await pilot.press("escape")
             await pilot.pause(0.1)
 
-            # 8. 切换板块并测试 1/2/s/f 快捷键
+            # 8. 左侧栏无需滚动条，支持点击「热门板块」栏目及收藏板块
             sidebar = app.query_one("#sidebar-list", OptionList)
+            assert sidebar.virtual_size.height <= sidebar.size.height
+
+            topics_nav_idx = next(
+                (i for i, opt in enumerate(sidebar.options) if opt.id == "nav:topics"),
+                None,
+            )
+            assert topics_nav_idx is not None
+            sidebar.focus()
+            sidebar.highlighted = topics_nav_idx
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert app._view_mode == "topics"
+            assert feed_list.option_count >= 1
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert app._view_mode == "topic"
+
             cs2_idx = None
             for idx, opt in enumerate(sidebar.options):
                 if opt.id and opt.id.endswith(":43"):
